@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VW 自動モデリング ツール</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --card: #ffffff; --border: #e2e2dc; --text: #1a1a1a;
+    --sub: #6b6b6b; --accent: #3b6fb5; --accent-d: #2d588f; --ok: #2e7d4f; --warn: #c8821e;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Hiragino Kaku Gothic ProN", sans-serif;
+         background: var(--bg); color: var(--text); line-height: 1.6; }
+  header { padding: 20px 28px; border-bottom: 1px solid var(--border); background: var(--card); }
+  header h1 { margin: 0; font-size: 18px; }
+  header p { margin: 4px 0 0; font-size: 13px; color: var(--sub); }
+  main { max-width: 1080px; margin: 0 auto; padding: 24px 28px; display: grid;
+         grid-template-columns: 360px 1fr; gap: 24px; }
+  .card { background: var(--card); border: 1px solid var(--border); border-radius: 12px; padding: 20px; }
+  .card h2 { margin: 0 0 14px; font-size: 14px; color: var(--sub); font-weight: 600;
+             text-transform: uppercase; letter-spacing: .04em; }
+  #drop { border: 2px dashed var(--border); border-radius: 10px; padding: 28px 16px; text-align: center;
+          cursor: pointer; transition: .15s; color: var(--sub); font-size: 14px; }
+  #drop.hover { border-color: var(--accent); background: #eef3fa; color: var(--accent-d); }
+  #drop.has { border-style: solid; border-color: var(--ok); color: var(--ok); }
+  .row { display: flex; align-items: center; justify-content: space-between; margin: 10px 0; gap: 10px; }
+  .row label { font-size: 13px; color: var(--text); }
+  .row input { width: 110px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
+               font-size: 13px; text-align: right; }
+  .row input[type=text] { width: 150px; text-align: left; }
+  details { margin-top: 12px; }
+  details summary { font-size: 13px; color: var(--accent-d); cursor: pointer; }
+  button { width: 100%; margin-top: 16px; padding: 12px; background: var(--accent); color: #fff;
+           border: none; border-radius: 8px; font-size: 15px; font-weight: 600; cursor: pointer; }
+  button:hover { background: var(--accent-d); }
+  button:disabled { opacity: .5; cursor: default; }
+  #summary { display: none; gap: 10px; flex-wrap: wrap; margin-bottom: 14px; }
+  .chip { background: #eef3fa; color: var(--accent-d); border-radius: 999px; padding: 4px 12px; font-size: 12px; font-weight: 600; }
+  pre { background: #1e1e1e; color: #e6e6e6; border-radius: 10px; padding: 16px; overflow: auto;
+        max-height: 460px; font-size: 12px; line-height: 1.5; margin: 0; }
+  .actions { display: flex; gap: 10px; margin-bottom: 12px; }
+  .actions button { width: auto; margin: 0; padding: 8px 16px; font-size: 13px; }
+  .ghost { background: #fff; color: var(--accent-d); border: 1px solid var(--border); }
+  .ghost:hover { background: #f0f4fa; }
+  .empty { color: var(--sub); font-size: 14px; text-align: center; padding: 60px 0; }
+  .err { color: #b3261e; font-size: 13px; margin-top: 10px; }
+  .hint { font-size: 12px; color: var(--sub); margin-top: 6px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>VW 自動モデリング ツール</h1>
+  <p>意匠図 DXF をアップロード → VectorWorks 用の 3D モデリングスクリプトを生成</p>
+</header>
+<main>
+  <!-- 左：入力 -->
+  <section class="card">
+    <h2>① 図面をアップロード</h2>
+    <div id="drop">
+      DXF ファイルをドラッグ＆ドロップ<br>またはクリックして選択
+      <input type="file" id="fileInput" accept=".dxf" hidden>
+    </div>
+
+    <h2 style="margin-top:22px">② 天井高（唯一の必須確認項目）</h2>
+    <div class="row"><label>天井高 CH</label><input type="number" id="ch" placeholder="図面から自動検出"></div>
+    <div class="hint" style="margin:-6px 0 8px">空欄なら図面の注記（"天井高2400"・"CH≒2400"等）を読み取る。検出できない場合だけ入力を求めます。<br>レイヤー・窓高さ等はすべて自動判定（キーワード認識）。細かく変えたい時だけ下の詳細設定へ。</div>
+
+    <details>
+      <summary>詳細設定（通常は変更不要）</summary>
+      <div class="row"><label>ドア開口高 DOOR_HEAD</label><input type="number" id="door_head" value="2000"></div>
+      <div class="row"><label>腰窓 腰高 SILL</label><input type="number" id="sill" value="900"></div>
+      <div class="row"><label>腰窓 まぐさ HEAD</label><input type="number" id="head" value="2400"></div>
+      <div class="row"><label>FIX窓 窓台</label><input type="number" id="sill_fix" value="150"></div>
+      <div class="row"><label>FIX窓 まぐさ</label><input type="number" id="head_fix" value="3300"></div>
+      <div class="row"><label>腰高引き違い 腰高</label><input type="number" id="sill_hiki" value="900"></div>
+      <div class="row"><label>腰高引き違い まぐさ</label><input type="number" id="head_hiki" value="2000"></div>
+      <div class="row"><label>掃き出し引き違い 窓台</label><input type="number" id="sill_haki" value="0"></div>
+      <div class="row"><label>掃き出し引き違い まぐさ</label><input type="number" id="head_haki" value="2000"></div>
+      <div class="row"><label>梁幅 BEAM_W</label><input type="number" id="beam_w" value="200"></div>
+      <div class="row"><label>梁せい BEAM_D</label><input type="number" id="beam_d" value="400"></div>
+      <div class="row"><label>窓枠見付 FR</label><input type="number" id="fr" value="60"></div>
+      <div class="row"><label>窓枠見込み FD</label><input type="number" id="fd" value="70"></div>
+      <div class="row"><label>ガラス厚 GT</label><input type="number" id="gt" value="20"></div>
+      <div class="row"><label>窓の線色(ACI)</label><input type="number" id="blue_color" value="5"></div>
+      <div class="row"><label>建具レイヤー</label><input type="text" id="tategu_layer" value="建具"></div>
+      <div class="row"><label>躯体レイヤー</label><input type="text" id="wall_layers" value="躯体,0,外壁,内壁,壁,壁・建具"></div>
+      <div class="row"><label>内壁ペアリング対象</label><input type="text" id="part_layers" value="躯体,外壁,内壁,壁,壁・建具,間仕切"></div>
+      <div class="row"><label>梁レイヤー</label><input type="text" id="beam_layer" value="梁"></div>
+      <div class="row"><label>家具レイヤー</label><input type="text" id="furniture_layer" value="家具"></div>
+      <div class="row"><label>家具ライブラリVWX</label><input type="text" id="muji_lib" value="/Users/aikawawakou/Documents/MUJIHOUSE/MUJI家具 (1) v2021.vwx"></div>
+      <div class="row"><label>サッシレイヤー</label><input type="text" id="sash_layer" value="インナーサッシ"></div>
+      <div class="row"><label>断熱レイヤー</label><input type="text" id="insul_layer" value="断熱"></div>
+      <div class="row"><label>掃き出し窓の最小幅</label><input type="number" id="haki_min_w" value="1500"></div>
+      <div class="row"><label>該当なし家具の高さ</label><input type="number" id="furn_box_h" value="700"></div>
+      <div class="hint">レイヤー名はキーワードでも自動認識される（壁/躯体/間仕切・サッシ/窓・断熱・天井・梁・家具）。<br>クラス別: 壁・建具=壁+建具(3方枠+扉) / インナーサッシ=窓 / 断熱・躯体=そのまま / 家具=自動インポート</div>
+    </details>
+
+    <button id="go" disabled>スクリプトを生成</button>
+    <div class="err" id="err"></div>
+  </section>
+
+  <!-- 右：結果 -->
+  <section class="card">
+    <h2>③ 生成スクリプト</h2>
+    <div id="summary"></div>
+    <div class="actions" id="actions" style="display:none">
+      <button class="ghost" id="copy">コピー</button>
+      <button class="ghost" id="dl">ダウンロード</button>
+    </div>
+    <div id="result"><div class="empty">DXF をアップロードして「生成」を押すと、ここに VW スクリプトが出ます。<br>出力をコピーして VW の ツール &gt; ツールマクロ &gt; 新規(Python) に貼り付けて実行してください。</div></div>
+  </section>
+</main>
+
+<script>
+  const drop = document.getElementById('drop');
+  const fileInput = document.getElementById('fileInput');
+  const go = document.getElementById('go');
+  const err = document.getElementById('err');
+  const result = document.getElementById('result');
+  const summary = document.getElementById('summary');
+  const actions = document.getElementById('actions');
+  let chosen = null, lastScript = '', lastName = 'model_vw.py';
+
+  drop.addEventListener('click', () => fileInput.click());
+  drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('hover'); });
+  drop.addEventListener('dragleave', () => drop.classList.remove('hover'));
+  drop.addEventListener('drop', e => {
+    e.preventDefault(); drop.classList.remove('hover');
+    if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', () => { if (fileInput.files.length) setFile(fileInput.files[0]); });
+
+  function setFile(f) {
+    chosen = f;
+    drop.classList.add('has');
+    drop.innerHTML = '✓ ' + f.name + '<br><span style="font-size:12px">クリックで変更</span>';
+    drop.appendChild(fileInput);
+    go.disabled = false;
+  }
+
+  go.addEventListener('click', async () => {
+    if (!chosen) return;
+    err.textContent = ''; go.disabled = true; go.textContent = '生成中…';
+    const fd = new FormData();
+    fd.append('file', chosen);
+    if (ch.value) fd.append('ch', ch.value);
+    fd.append('sill', sill.value); fd.append('head', head.value);
+    fd.append('sill_fix', sill_fix.value); fd.append('head_fix', head_fix.value);
+    fd.append('blue_color', blue_color.value);
+    fd.append('tategu_layer', tategu_layer.value);
+    fd.append('wall_layers', wall_layers.value);
+    fd.append('part_layers', part_layers.value);
+    fd.append('door_head', door_head.value);
+    fd.append('beam_w', beam_w.value); fd.append('beam_d', beam_d.value);
+    fd.append('fr', fr.value); fd.append('fd', document.getElementById('fd').value);
+    fd.append('gt', gt.value);
+    fd.append('beam_layer', beam_layer.value);
+    fd.append('furniture_layer', furniture_layer.value);
+    fd.append('muji_lib', muji_lib.value);
+    fd.append('sash_layer', sash_layer.value);
+    fd.append('insul_layer', insul_layer.value);
+    fd.append('haki_min_w', haki_min_w.value);
+    fd.append('furn_box_h', furn_box_h.value);
+    fd.append('sill_hiki', sill_hiki.value); fd.append('head_hiki', head_hiki.value);
+    fd.append('sill_haki', sill_haki.value); fd.append('head_haki', head_haki.value);
+    try {
+      const r = await fetch('/generate', { method: 'POST', body: fd });
+      const j = await r.json();
+      if (!j.ok) {
+        err.textContent = '⚠ ' + j.error;
+        if (j.needs_ch) {   // 天井高が特定できない → CH入力欄を強調
+          ch.style.borderColor = '#b3261e';
+          ch.focus();
+        }
+        return;
+      }
+      ch.style.borderColor = '';
+      lastScript = j.script; lastName = j.filename;
+      const s = j.summary;
+      const chVals = (s.ch_values || []).map(([v, n]) => `${v}×${n}`).join(' ');
+      summary.style.display = 'flex';
+      const chk = s.check || {};
+      const chkChip = chk.recall != null
+        ? `再現${Math.round(chk.recall * 100)}% 適合${Math.round(chk.precision * 100)}%` +
+          (chk.offset ? ` ズレ${chk.offset}` : '')
+        : '-';
+      summary.innerHTML = [
+        ['セルフチェック', chkChip],
+        ['天井高', s.ch + 'mm' + (s.ch_detected ? `(検出: ${chVals})` : '(入力値)')],
+        ['部屋', (s.rooms_missing || []).length ? '未検出: ' + s.rooms_missing.join('/') : '基本6室OK'],
+        ['躯体壁', s.walls], ['内壁', s.partition_walls], ['外周帯', s.outline_frames],
+        ['建具', s.doors + '(' + s.door_panels + '枚)'], ['玄関扉', s.entrance ? 'あり' : '⚠なし'],
+        ['窓(番号調整可)', s.windows], ['サッシ窓', s.sashes], ['断熱', s.insulation], ['天井梁', s.ceil_beams],
+        ['南窓', s.south_win], ['北窓', s.north_win],
+        ['東FIX窓', s.east_fix], ['西面連続窓', s.west_ribbon],
+        ['梁', s.beams], ['家具配置', s.furniture], ['簡易ボリューム家具', s.furniture_boxed], ['未マッチ家具', s.furniture_unmatched],
+        ['原点', 'x' + s.origin[0] + ' y' + s.origin[1]]
+      ].map(([k, v]) => `<span class="chip">${k}: ${v}</span>`).join('');
+      // セルフチェック警告と対処ヒント
+      const hints = [
+        ['再現率が低い', '→ 詳細設定の「躯体レイヤー」に図面の壁レイヤー名を追加してみてください'],
+        ['適合率が低い', '→ 図面に無い壁を生成しています。「躯体レイヤー」から余分なレイヤーを外してください'],
+        ['系統ズレ', '→ 図面の原点設定を確認。VWで実行すると自動位置合わせが働きます'],
+        ['単位ミス', '→ DXF書き出しの単位をmmにして書き出し直してください'],
+        ['CH不明', '→ 図面に「CH≒2400」等の注記を追加すると部屋ごとの天井高が反映されます'],
+      ];
+      const warns = (chk.warnings || []);
+      if (warns.length) {
+        err.innerHTML = warns.map(w => {
+          const h = hints.find(([k]) => w.includes(k));
+          return '⚠ ' + w + (h ? '<br><span style="color:#6b6b6b">' + h[1] + '</span>' : '');
+        }).join('<br>');
+      }
+      result.innerHTML = '<pre></pre>';
+      result.querySelector('pre').textContent = j.script;
+      actions.style.display = 'flex';
+    } catch (e) {
+      err.textContent = '⚠ 通信エラー: ' + e.message;
+    } finally {
+      go.disabled = false; go.textContent = 'スクリプトを生成';
+    }
+  });
+
+  document.getElementById('copy').addEventListener('click', () => {
+    navigator.clipboard.writeText(lastScript);
+    const b = document.getElementById('copy'); b.textContent = 'コピーした';
+    setTimeout(() => b.textContent = 'コピー', 1200);
+  });
+  document.getElementById('dl').addEventListener('click', () => {
+    const blob = new Blob([lastScript], { type: 'text/x-python' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = lastName; a.click();
+  });
+</script>
+</body>
+</html>

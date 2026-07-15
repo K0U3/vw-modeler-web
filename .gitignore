@@ -1,0 +1,10 @@
+.DS_Store
+__pycache__/
+*.pyc
+node_modules/
+.vercel
+.env
+.env.local
+.venv/
+venv/
+nohup.out
