@@ -46,6 +46,15 @@
   .empty { color: var(--sub); font-size: 14px; text-align: center; padding: 60px 0; }
   .err { color: #b3261e; font-size: 13px; margin-top: 10px; }
   .hint { font-size: 12px; color: var(--sub); margin-top: 6px; }
+  #winedit { margin-bottom: 14px; }
+  .wtab { border-collapse: collapse; width: 100%; font-size: 13px; }
+  .wtab th { text-align: left; color: var(--sub); font-weight: 600; font-size: 12px;
+             padding: 4px 8px; border-bottom: 1px solid var(--border); }
+  .wtab td { padding: 4px 8px; border-bottom: 1px solid var(--border); }
+  .wtab input { width: 76px; padding: 4px 6px; border: 1px solid var(--border);
+                border-radius: 6px; font-size: 13px; text-align: right; }
+  .wtab input:disabled { background: #f0f0ee; color: #aaa; }
+  .wtab select { padding: 4px 6px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; }
 </style>
 </head>
 <body>
@@ -64,37 +73,7 @@
 
     <h2 style="margin-top:22px">② 天井高（唯一の必須確認項目）</h2>
     <div class="row"><label>天井高 CH</label><input type="number" id="ch" placeholder="図面から自動検出"></div>
-    <div class="hint" style="margin:-6px 0 8px">空欄なら図面の注記（"天井高2400"・"CH≒2400"等）を読み取る。検出できない場合だけ入力を求めます。<br>レイヤー・窓高さ等はすべて自動判定（キーワード認識）。細かく変えたい時だけ下の詳細設定へ。</div>
-
-    <details>
-      <summary>詳細設定（通常は変更不要）</summary>
-      <div class="row"><label>ドア開口高 DOOR_HEAD</label><input type="number" id="door_head" value="2000"></div>
-      <div class="row"><label>腰窓 腰高 SILL</label><input type="number" id="sill" value="900"></div>
-      <div class="row"><label>腰窓 まぐさ HEAD</label><input type="number" id="head" value="2400"></div>
-      <div class="row"><label>FIX窓 窓台</label><input type="number" id="sill_fix" value="150"></div>
-      <div class="row"><label>FIX窓 まぐさ</label><input type="number" id="head_fix" value="3300"></div>
-      <div class="row"><label>腰高引き違い 腰高</label><input type="number" id="sill_hiki" value="900"></div>
-      <div class="row"><label>腰高引き違い まぐさ</label><input type="number" id="head_hiki" value="2000"></div>
-      <div class="row"><label>掃き出し引き違い 窓台</label><input type="number" id="sill_haki" value="0"></div>
-      <div class="row"><label>掃き出し引き違い まぐさ</label><input type="number" id="head_haki" value="2000"></div>
-      <div class="row"><label>梁幅 BEAM_W</label><input type="number" id="beam_w" value="200"></div>
-      <div class="row"><label>梁せい BEAM_D</label><input type="number" id="beam_d" value="400"></div>
-      <div class="row"><label>窓枠見付 FR</label><input type="number" id="fr" value="60"></div>
-      <div class="row"><label>窓枠見込み FD</label><input type="number" id="fd" value="70"></div>
-      <div class="row"><label>ガラス厚 GT</label><input type="number" id="gt" value="20"></div>
-      <div class="row"><label>窓の線色(ACI)</label><input type="number" id="blue_color" value="5"></div>
-      <div class="row"><label>建具レイヤー</label><input type="text" id="tategu_layer" value="建具"></div>
-      <div class="row"><label>躯体レイヤー</label><input type="text" id="wall_layers" value="躯体,0,外壁,内壁,壁,壁・建具"></div>
-      <div class="row"><label>内壁ペアリング対象</label><input type="text" id="part_layers" value="躯体,外壁,内壁,壁,壁・建具,間仕切"></div>
-      <div class="row"><label>梁レイヤー</label><input type="text" id="beam_layer" value="梁"></div>
-      <div class="row"><label>家具レイヤー</label><input type="text" id="furniture_layer" value="家具"></div>
-      <div class="row"><label>家具ライブラリVWX</label><input type="text" id="muji_lib" value="/Users/aikawawakou/Documents/MUJIHOUSE/MUJI家具 (1) v2021.vwx"></div>
-      <div class="row"><label>サッシレイヤー</label><input type="text" id="sash_layer" value="インナーサッシ"></div>
-      <div class="row"><label>断熱レイヤー</label><input type="text" id="insul_layer" value="断熱"></div>
-      <div class="row"><label>掃き出し窓の最小幅</label><input type="number" id="haki_min_w" value="1500"></div>
-      <div class="row"><label>該当なし家具の高さ</label><input type="number" id="furn_box_h" value="700"></div>
-      <div class="hint">レイヤー名はキーワードでも自動認識される（壁/躯体/間仕切・サッシ/窓・断熱・天井・梁・家具）。<br>クラス別: 壁・建具=壁+建具(3方枠+扉) / インナーサッシ=窓 / 断熱・躯体=そのまま / 家具=自動インポート</div>
-    </details>
+    <div class="hint" style="margin:-6px 0 8px">空欄なら図面の注記（"天井高2400"・"CH≒2400"等）を読み取る。検出できない場合だけ入力を求めます。<br>レイヤー等はすべて自動判定（キーワード認識）。窓は生成後に番号ごとに種別・寸法を調整できます。</div>
 
     <button id="go" disabled>スクリプトを生成</button>
     <div class="err" id="err"></div>
@@ -104,6 +83,11 @@
   <section class="card">
     <h2>③ 生成スクリプト</h2>
     <div id="summary"></div>
+    <div id="winedit" style="display:none">
+      <h2 style="margin-top:6px">④ 窓の調整（モデル内の「窓n」表記と対応）</h2>
+      <div id="wintable"></div>
+      <div class="hint">変更すると下のスクリプトに即反映されます。ダウンロード/コピーして VW で再実行すると、前回分を消して調整後の窓で作り直されます。掃き出し窓は床から立ち上がるため腰壁高さはありません。</div>
+    </div>
     <div class="actions" id="actions" style="display:none">
       <button class="ghost" id="copy">コピー</button>
       <button class="ghost" id="dl">ダウンロード</button>
@@ -153,26 +137,7 @@
       } catch (e) { upBlob = chosen; upName = chosen.name; }
     }
     fd.append('file', upBlob, upName);
-    if (ch.value) fd.append('ch', ch.value);
-    fd.append('sill', sill.value); fd.append('head', head.value);
-    fd.append('sill_fix', sill_fix.value); fd.append('head_fix', head_fix.value);
-    fd.append('blue_color', blue_color.value);
-    fd.append('tategu_layer', tategu_layer.value);
-    fd.append('wall_layers', wall_layers.value);
-    fd.append('part_layers', part_layers.value);
-    fd.append('door_head', door_head.value);
-    fd.append('beam_w', beam_w.value); fd.append('beam_d', beam_d.value);
-    fd.append('fr', fr.value); fd.append('fd', document.getElementById('fd').value);
-    fd.append('gt', gt.value);
-    fd.append('beam_layer', beam_layer.value);
-    fd.append('furniture_layer', furniture_layer.value);
-    fd.append('muji_lib', muji_lib.value);
-    fd.append('sash_layer', sash_layer.value);
-    fd.append('insul_layer', insul_layer.value);
-    fd.append('haki_min_w', haki_min_w.value);
-    fd.append('furn_box_h', furn_box_h.value);
-    fd.append('sill_hiki', sill_hiki.value); fd.append('head_hiki', head_hiki.value);
-    fd.append('sill_haki', sill_haki.value); fd.append('head_haki', head_haki.value);
+    if (ch.value) fd.append('ch', ch.value);   // 他のパラメータはすべて自動判定（サーバー側既定値）
     try {
       const r = await fetch('/generate', { method: 'POST', body: fd });
       let j;
@@ -229,8 +194,8 @@
       ].map(([k, v]) => `<span class="chip">${k}: ${v}</span>`).join('');
       // セルフチェック警告と対処ヒント
       const hints = [
-        ['再現率が低い', '→ 詳細設定の「躯体レイヤー」に図面の壁レイヤー名を追加してみてください'],
-        ['適合率が低い', '→ 図面に無い壁を生成しています。「躯体レイヤー」から余分なレイヤーを外してください'],
+        ['再現率が低い', '→ 図面のレイヤー構成が特殊な可能性。DXFを相川まで送ってください'],
+        ['適合率が低い', '→ 図面に無い壁を生成している可能性。DXFを相川まで送ってください'],
         ['系統ズレ', '→ 図面の原点設定を確認。VWで実行すると自動位置合わせが働きます'],
         ['単位ミス', '→ DXF書き出しの単位をmmにして書き出し直してください'],
         ['CH不明', '→ 図面に「CH≒2400」等の注記を追加すると部屋ごとの天井高が反映されます'],
@@ -245,6 +210,12 @@
       result.innerHTML = '<pre></pre>';
       result.querySelector('pre').textContent = j.script;
       actions.style.display = 'flex';
+      // ④ 窓の調整テーブル（番号ごとに種別・幅・高さ・腰壁を編集 → スクリプトへ即反映）
+      winList = (s.window_list || []).map(w => ({
+        no: w.no, type: w.type || 'koshi', w: w.w || 0, h: w.h || 0,
+        sill: w.type === 'haki' ? 0 : (w.sill || 0),
+      }));
+      renderWinEdit();
     } catch (e) {
       err.textContent = '⚠ 通信エラー: ' + e.message
         + '\n原因: ネットワークが切れたか、サーバーに接続できていません'
@@ -254,6 +225,58 @@
       go.disabled = false; go.textContent = 'スクリプトを生成';
     }
   });
+
+  // ── 窓の調整: WIN_SETTINGS ブロックをスクリプト内で書き換える ──
+  let winList = [];
+  const winedit = document.getElementById('winedit');
+  const wintable = document.getElementById('wintable');
+
+  function renderWinEdit() {
+    if (!winList.length) { winedit.style.display = 'none'; return; }
+    winedit.style.display = 'block';
+    wintable.innerHTML = '<table class="wtab"><tr><th>窓</th><th>種別</th><th>幅(mm)</th><th>高さ(mm)</th><th>腰壁高さ(mm)</th></tr>'
+      + winList.map(w => `<tr data-no="${w.no}">
+        <td>窓${w.no}</td>
+        <td><select class="wt">
+          <option value="haki"${w.type === 'haki' ? ' selected' : ''}>掃き出し窓</option>
+          <option value="koshi"${w.type === 'koshi' ? ' selected' : ''}>腰高窓</option>
+          <option value="fix"${w.type === 'fix' ? ' selected' : ''}>FIX窓</option>
+        </select></td>
+        <td><input class="ww" type="number" value="${w.w}"></td>
+        <td><input class="wh" type="number" value="${w.h}"></td>
+        <td><input class="ws" type="number" value="${w.sill}"${w.type === 'haki' ? ' disabled' : ''}></td>
+      </tr>`).join('') + '</table>';
+    wintable.querySelectorAll('tr[data-no]').forEach(tr => {
+      const no = +tr.dataset.no;
+      tr.querySelectorAll('select,input').forEach(el => el.addEventListener('change', () => {
+        const w = winList.find(x => x.no === no);
+        w.type = tr.querySelector('.wt').value;
+        w.w = +tr.querySelector('.ww').value || w.w;
+        w.h = +tr.querySelector('.wh').value || w.h;
+        const sEl = tr.querySelector('.ws');
+        if (w.type === 'haki') { sEl.value = 0; sEl.disabled = true; w.sill = 0; }
+        else { sEl.disabled = false; w.sill = +sEl.value || 0; }
+        applyWinSettings();
+      }));
+    });
+  }
+
+  function applyWinSettings() {
+    // 生成スクリプトのマーカー間 WIN_SETTINGS を差し替え（try包みのインデントにも追従）
+    const re = /([ \t]*)# >>> WIN_SETTINGS[\s\S]*?# <<< WIN_SETTINGS/;
+    const m = lastScript.match(re);
+    if (!m) return;
+    const ind = m[1];
+    const rows = winList.map(w => {
+      const base = `${ind}    ${w.no}: {'type': '${w.type}', 'w': ${w.w}, 'h': ${w.h}`;
+      return w.type === 'haki' ? base + '},' : base + `, 'sill': ${w.sill}},`;
+    }).join('\n');
+    const block = ind + '# >>> WIN_SETTINGS\n' + ind + 'WIN_SETTINGS = {\n'
+      + (rows ? rows + '\n' : '') + ind + '}\n' + ind + '# <<< WIN_SETTINGS';
+    lastScript = lastScript.replace(re, block);
+    const pre = result.querySelector('pre');
+    if (pre) pre.textContent = lastScript;
+  }
 
   document.getElementById('copy').addEventListener('click', () => {
     navigator.clipboard.writeText(lastScript);

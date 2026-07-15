@@ -2969,7 +2969,7 @@ def build_script(dxf_path, overrides=None):
             '壁が1枚も生成されていません。原因: 壁レイヤー名が'
             '「躯体・壁・建具・外壁・内壁」のいずれにも一致しないか、'
             '壁が閉ポリライン/二重線で描かれていない可能性 — '
-            '詳細設定の「躯体レイヤー」に図面の壁レイヤー名を追加してください')
+            '図面のレイヤー名を確認してください（対応が必要な場合は相川まで）')
 
     # ── 部屋天井（CH注記に追従）とバルコニー ──
     # 壁+建具+サッシで囲まれた領域をラベル位置からフラッドフィルで特定する
@@ -3424,53 +3424,113 @@ def build_script(dxf_path, overrides=None):
     a("    'haki':   {'sill': SILL_HAKI, 'head': HEAD_HAKI, 'pitch': 0, 'hiki': True},")
     a('}')
     a('')
-    a('# ── 窓の個別調整 ──────────────────────────────')
-    a('# 窓番号（各 win() 行のコメント・スクリプト末尾の窓一覧を参照）をキーに')
-    a("# sill(腰高)・head(まぐさ)・pitch(方立間隔)・hiki(引き違い) を上書きして再実行すると、")
-    a('# 前回の生成物を消してから調整後のモデルを作り直す。')
-    a("# 例) WIN_OVERRIDES = { 3: {'sill': 600, 'head': 2200}, 7: {'head': 2400} }")
-    a('WIN_OVERRIDES = {')
+    a('# ── 窓の個別設定（モデル内の「窓n」文字表記と対応・編集して再実行で反映） ──')
+    a("# type: 'haki'=掃き出し窓 / 'koshi'=腰高窓 / 'fix'=FIX窓（はめ殺し・1枚ガラス）")
+    a('# w=窓幅mm / h=窓高さmm / sill=腰壁高さmm（掃き出しは sill=0 固定）')
+    a('# 再実行すると前回の生成物を消してから調整後のモデルを作り直す')
+    a('# >>> WIN_SETTINGS')
+    a('WIN_SETTINGS = {')
     a('}')
+    a('# <<< WIN_SETTINGS')
     a('')
     _kinds = ', '.join(f"{i + 1}: '{('haki' if s['kind'] == 'hakidashi' else 'hiki')}'"
                        for i, s in enumerate(sashes))
     a('WIN_KINDS = {' + _kinds + '}   # サッシ窓番号→種別（壁の穴あけ用）')
     a('SASH_WIN_NOS = set(WIN_KINDS)   # 壁側が穴を開ける窓（腰壁/垂れ壁を作らない）')
     a('')
+    a("_TYPE_BASE = {'haki': 'haki', 'koshi': 'hiki'}   # WIN_SETTINGSのtype→既定値の種別")
+    a('')
+    a('def _win_params(no, kind):')
+    a('    """窓番号のWIN_SETTINGSを解決 → (sill/head/pitch/hiki, 幅上書きorNone)"""')
+    a('    s = WIN_SETTINGS.get(no, {})')
+    a("    t = s.get('type')")
+    a('    p = dict(WIN_DEFAULTS[_TYPE_BASE.get(t, kind)])')
+    a("    if t == 'haki':")
+    a("        p['sill'] = 0                     # 掃き出しは床から")
+    a("    elif t == 'fix':")
+    a("        p['pitch'] = 0                    # FIX窓=方立なし")
+    a("        p['hiki'] = False                 # 引き違いなし（1枚ガラス）")
+    a("    if t != 'haki' and 'sill' in s:")
+    a("        p['sill'] = s['sill']")
+    a("    if 'h' in s:")
+    a("        p['head'] = p['sill'] + s['h']")
+    a("    return p, s.get('w')")
+    a('')
+    a('def _win_span(x1, y1, x2, y2, w):')
+    a('    """幅上書き: 窓の長辺方向に中心を保ったまま幅wにする"""')
+    a('    if not w:')
+    a('        return x1, y1, x2, y2')
+    a('    if (x2 - x1) >= (y2 - y1):')
+    a('        cx = (x1 + x2) / 2.0')
+    a('        return cx - w / 2.0, y1, cx + w / 2.0, y2')
+    a('    cy = (y1 + y2) / 2.0')
+    a('    return x1, cy - w / 2.0, x2, cy + w / 2.0')
+    a('')
     a('def win(no, kind, x1, y1, x2, y2):')
-    a('    """番号付き窓。サッシ窓（SASH_WIN_NOS）は壁側が窓サイズの穴を開けるので')
-    a('    枠+ガラスのみ生成。それ以外（帯壁上の窓）は腰壁/垂れ壁も作る"""')
-    a('    p = dict(WIN_DEFAULTS[kind])')
-    a('    p.update(WIN_OVERRIDES.get(no, {}))')
+    a('    """番号付き窓。WIN_SETTINGS[no] の type/w/h/sill を反映。')
+    a('    サッシ窓（SASH_WIN_NOS）は壁側が穴を開けるので枠+ガラスのみ生成"""')
+    a('    p, w = _win_params(no, kind)')
+    a('    mx1, my1, mx2, my2 = _win_span(x1, y1, x2, y2, w)')
     a('    if no not in SASH_WIN_NOS:')
+    a('        if (x2 - x1) >= (y2 - y1):        # 幅を狭めた分の左右は壁で埋める')
+    a('            if mx1 > x1:')
+    a('                rect(x1, y1, mx1, y2, CH)')
+    a('            if x2 > mx2:')
+    a('                rect(mx2, y1, x2, y2, CH)')
+    a('        else:')
+    a('            if my1 > y1:')
+    a('                rect(x1, y1, x2, my1, CH)')
+    a('            if y2 > my2:')
+    a('                rect(x1, my2, x2, y2, CH)')
     a("        if p['sill'] > 0:")
-    a("            rect(x1, y1, x2, y2, p['sill'])                 # 腰壁")
-    a("        rect(x1, y1, x2, y2, CH - p['head'], p['head'])     # 垂れ壁")
-    a("    win_unit(x1, y1, x2, y2, p['sill'], p['head'], p['pitch'], p['hiki'])")
+    a("            rect(mx1, my1, mx2, my2, p['sill'])                 # 腰壁")
+    a("        rect(mx1, my1, mx2, my2, CH - p['head'], p['head'])     # 垂れ壁")
+    a("    win_unit(mx1, my1, mx2, my2, p['sill'], p['head'], p['pitch'], p['hiki'])")
     a("    num_label('窓%d' % no, (x1 + x2) / 2, (y1 + y2) / 2)")
     a('')
     a('def win_wall_rects(no, x1, y1, x2, y2):')
-    a('    \"\"\"窓正面の壁・断熱: 窓サイズの穴（sill〜head）を残して下と上のボリュームを立ち上げる\"\"\"')
-    a('    p = dict(WIN_DEFAULTS[WIN_KINDS.get(no, "hiki")])')
-    a('    p.update(WIN_OVERRIDES.get(no, {}))')
+    a('    \"\"\"窓正面の壁・断熱: 窓サイズの穴（sill〜head）を残して立ち上げる。')
+    a('    WIN_SETTINGSの幅・高さ・腰壁に連動。幅を狭めた余白は全高で埋める\"\"\"')
+    a("    p, w = _win_params(no, WIN_KINDS.get(no, 'hiki'))")
+    a('    mx1, my1, mx2, my2 = _win_span(x1, y1, x2, y2, w)')
+    a('    if (x2 - x1) >= (y2 - y1):')
+    a('        if mx1 > x1:')
+    a('            rect(x1, y1, mx1, y2, CH)')
+    a('        if x2 > mx2:')
+    a('            rect(mx2, y1, x2, y2, CH)')
+    a('    else:')
+    a('        if my1 > y1:')
+    a('            rect(x1, y1, x2, my1, CH)')
+    a('        if y2 > my2:')
+    a('            rect(x1, my2, x2, y2, CH)')
     a("    if p['sill'] > 0:")
-    a("        rect(x1, y1, x2, y2, p['sill'])                 # 穴の下")
-    a("    rect(x1, y1, x2, y2, CH - p['head'], p['head'])     # 穴の上")
+    a("        rect(mx1, my1, mx2, my2, p['sill'])                 # 穴の下")
+    a("    rect(mx1, my1, mx2, my2, CH - p['head'], p['head'])     # 穴の上")
     a('')
     a('def win_wall_strips(no, x1, y1, x2, y2):')
     a('    """窓位置の壁ライン: 窓サイズの穴（sill〜head）を残して下と上だけ立ち上げる。')
-    a('    WIN_OVERRIDESでsill/headを変えると穴の大きさも連動する"""')
-    a('    p = dict(WIN_DEFAULTS[WIN_KINDS.get(no, "hiki")])')
-    a('    p.update(WIN_OVERRIDES.get(no, {}))')
+    a('    WIN_SETTINGSの幅・高さ・腰壁に連動。幅を狭めた余白は全高で埋める"""')
+    a("    p, w = _win_params(no, WIN_KINDS.get(no, 'hiki'))")
+    a('    mx1, my1, mx2, my2 = _win_span(x1, y1, x2, y2, w)')
+    a('    if (x2 - x1) >= (y2 - y1):')
+    a('        if mx1 > x1:')
+    a('            wall_sheet(x1, y1, mx1, y2, CH)')
+    a('        if x2 > mx2:')
+    a('            wall_sheet(mx2, y1, x2, y2, CH)')
+    a('    else:')
+    a('        if my1 > y1:')
+    a('            wall_sheet(x1, y1, x2, my1, CH)')
+    a('        if y2 > my2:')
+    a('            wall_sheet(x1, my2, x2, y2, CH)')
     a("    if p['sill'] > 0:")
-    a("        wall_sheet(x1, y1, x2, y2, p['sill'])                 # 穴の下（腰壁ライン）")
-    a("    wall_sheet(x1, y1, x2, y2, CH - p['head'], p['head'])     # 穴の上（垂れ壁ライン）")
+    a("        wall_sheet(mx1, my1, mx2, my2, p['sill'])                 # 穴の下（腰壁ライン）")
+    a("    wall_sheet(mx1, my1, mx2, my2, CH - p['head'], p['head'])     # 穴の上（垂れ壁ライン）")
     a('')
     a('def beam(x1, y1, x2, y2):')
     a('    """梁: 天井面から BEAM_D 下がるフットプリント押し出し"""')
     a('    rect(x1, y1, x2, y2, BEAM_D, CH - BEAM_D)')
     a('')
-    a('# ── 建具・天井梁の個別調整（窓のWIN_OVERRIDESと同様） ──')
+    a('# ── 建具・天井梁の個別調整（窓のWIN_SETTINGSと同様に番号で指定） ──')
     a("# 例) DOOR_OVERRIDES = { 2: {'head': 2100} }   # 建具2の枠高さを2100に")
     a('DOOR_OVERRIDES = {')
     a('}')
@@ -3647,7 +3707,7 @@ def build_script(dxf_path, overrides=None):
         a("    num_label('家具%d' % no, cx, cy)")
         a('')
     a("vs.Layer('3Dモデル')")
-    a('# 再実行時は前回の生成物を消してから作り直す（WIN_OVERRIDES調整→再実行で反映）')
+    a('# 再実行時は前回の生成物を消してから作り直す（WIN_SETTINGS調整→再実行で反映）')
     a('_prev = vs.FActLayer()')
     a('while _prev:')
     a('    _nx = vs.NextObj(_prev)')
@@ -3761,7 +3821,7 @@ def build_script(dxf_path, overrides=None):
         a('')
 
     if wall_win_cuts or insul_win_cuts:
-        a(f'# 窓正面の壁・断熱の穴あき（窓サイズ: WIN_OVERRIDESのsill/headに連動）')
+        a(f'# 窓正面の壁・断熱の穴あき（窓サイズ: WIN_SETTINGSの幅・高さ・腰壁に連動）')
         for idx, r in wall_win_cuts:
             a(f'win_wall_rects({idx + 1}, {r[0]}, {r[1]}, {r[2]}, {r[3]})'
               f'   # 窓{idx + 1} 穴上下（壁）')
@@ -3780,7 +3840,7 @@ def build_script(dxf_path, overrides=None):
         a('')
 
     if any(sash_strips.values()):
-        a('# 窓開口の上下壁ライン（壁に窓サイズの穴: WIN_OVERRIDESのsill/headに連動）')
+        a('# 窓開口の上下壁ライン（壁に窓サイズの穴: WIN_SETTINGSの幅・高さ・腰壁に連動）')
         for idx, segs in sash_strips.items():
             for sgm in segs:
                 a(f'win_wall_strips({idx + 1}, {sgm[0]}, {sgm[1]}, {sgm[2]}, {sgm[3]})'
@@ -4083,8 +4143,27 @@ def build_script(dxf_path, overrides=None):
         a('        _furn_stats["residual"] += 1')
         a('')
 
+    # ── WIN_SETTINGS を検出値でプリフィル（種別・幅・高さ・腰壁が見える状態に） ──
+    _ws_map = {'haki': ('haki', SILL_HAKI, HEAD_HAKI),
+               'hiki': ('koshi', SILL_HIKI, HEAD_HIKI),
+               'fix': ('fix', SILL_FIX, HEAD_FIX),
+               'ribbon': ('koshi', SILL, HEAD)}
+    win_settings_rows = []
+    for n, kind, wx1, wy1, wx2, wy2, note in win_registry:
+        t, _si, _he = _ws_map.get(kind, ('koshi', SILL_HIKI, HEAD_HIKI))
+        wspan = round(max(wx2 - wx1, wy2 - wy1))
+        if t == 'haki':
+            win_settings_rows.append(
+                f"    {n}: {{'type': 'haki', 'w': {wspan}, 'h': {_he - _si}}},")
+        else:
+            win_settings_rows.append(
+                f"    {n}: {{'type': '{t}', 'w': {wspan}, 'h': {_he - _si},"
+                f" 'sill': {_si}}},")
+    _ws_idx = L.index('WIN_SETTINGS = {')
+    L[_ws_idx + 1:_ws_idx + 1] = win_settings_rows
+
     if win_registry:
-        a('# ─── 窓一覧（WIN_OVERRIDES のキー = この窓番号） ───')
+        a('# ─── 窓一覧（WIN_SETTINGS のキー = この窓番号 = モデル内の文字表記） ───')
         for n, kind, wx1, wy1, wx2, wy2, note in win_registry:
             a(f'#   窓{n}: {kind}  ({wx1},{wy1})-({wx2},{wy2})  {note}')
         a('')
@@ -4169,7 +4248,12 @@ def build_script(dxf_path, overrides=None):
         'sashes': len(sashes),
         'insulation': len(insul) + len(insul_segs),
         'windows': len(win_registry),
-        'window_list': [{'no': n, 'kind': k, 'bbox': [a1, b1, a2, b2], 'note': nt}
+        'window_list': [{'no': n, 'kind': k, 'bbox': [a1, b1, a2, b2], 'note': nt,
+                         'type': _ws_map.get(k, ('koshi',))[0],
+                         'w': round(max(a2 - a1, b2 - b1)),
+                         'h': (_ws_map.get(k, ('koshi', SILL_HIKI, HEAD_HIKI))[2]
+                               - _ws_map.get(k, ('koshi', SILL_HIKI, HEAD_HIKI))[1]),
+                         'sill': _ws_map.get(k, ('koshi', SILL_HIKI))[1]}
                         for n, k, a1, b1, a2, b2, nt in win_registry],
         'ceil_beams': len(ceil_beams),
         'south_win': len(swins),
@@ -4233,7 +4317,7 @@ def generate(dxf_path, out_path, ch=None):
         print(f"  ⚠ ラベル未検出: {' / '.join(s['rooms_missing'])}")
     print(f"  躯体壁 {s['walls']} / 内壁 {s['partition_walls']} / 外周帯 {s['outline_frames']}")
     print(f"  建具 {s['doors']}（扉パネル{s['door_panels']}・玄関扉{'あり' if s['entrance'] else '⚠なし'}） / サッシ窓 {s['sashes']} / 断熱 {s['insulation']}")
-    print(f"  窓 {s['windows']}箇所 / 天井梁 {s['ceil_beams']}（番号調整: WIN/DOOR/BEAM_OVERRIDES）")
+    print(f"  窓 {s['windows']}箇所 / 天井梁 {s['ceil_beams']}（番号調整: WIN_SETTINGS / DOOR・BEAM_OVERRIDES）")
     print(f"  部屋天井 {s['ceilings']}室 / バルコニー {s['balconies']}"
           + (f" / ⚠CH不明: {'・'.join(s['rooms_no_ch'])}" if s['rooms_no_ch'] else ''))
     print(f"  家具 配置{s['furniture']} / ベッド{s['beds']}（簡易+枕） / ソファ{s['sofas']}（座面+背+脚） / 簡易ボリューム{s['furniture_boxed']} / 未マッチ{s['furniture_unmatched']}")
