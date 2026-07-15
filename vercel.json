@@ -1,0 +1,11 @@
+{
+  "version": 2,
+  "functions": {
+    "api/index.py": {
+      "includeFiles": "{backend,frontend}/**",
+      "maxDuration": 60,
+      "memory": 1024
+    }
+  },
+  "rewrites": [{ "source": "/(.*)", "destination": "/api/index" }]
+}

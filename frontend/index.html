@@ -143,7 +143,16 @@
     if (!chosen) return;
     err.textContent = ''; go.disabled = true; go.textContent = '生成中…';
     const fd = new FormData();
-    fd.append('file', chosen);
+    // クラウド版のアップロード上限(約4.5MB)対策: 大きいDXFはブラウザでgzip圧縮
+    let upBlob = chosen, upName = chosen.name;
+    if (chosen.size > 3000000 && 'CompressionStream' in window) {
+      try {
+        const cs = chosen.stream().pipeThrough(new CompressionStream('gzip'));
+        upBlob = await new Response(cs).blob();
+        upName = chosen.name + '.gz';
+      } catch (e) { upBlob = chosen; upName = chosen.name; }
+    }
+    fd.append('file', upBlob, upName);
     if (ch.value) fd.append('ch', ch.value);
     fd.append('sill', sill.value); fd.append('head', head.value);
     fd.append('sill_fix', sill_fix.value); fd.append('head_fix', head_fix.value);

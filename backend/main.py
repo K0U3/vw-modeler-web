@@ -82,8 +82,14 @@ async def generate(
     head_haki: int = Form(2000),
 ):
     # アップロードされた DXF を一時ファイルに保存
-    suffix = Path(file.filename or "in.dxf").suffix or ".dxf"
+    # （クラウド版のアップロード上限対策: ブラウザ側で gzip 圧縮されてくる場合がある）
     data = await file.read()
+    fname = file.filename or "in.dxf"
+    if fname.endswith(".gz") or data[:2] == b"\x1f\x8b":
+        import gzip as _gz
+        data = _gz.decompress(data)
+        fname = fname[:-3] if fname.endswith(".gz") else fname
+    suffix = Path(fname).suffix or ".dxf"
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
     try:
         tmp.write(data)
@@ -114,7 +120,7 @@ async def generate(
         if ch is not None:
             overrides["CH"] = ch
         script, summary = engine.build_script(tmp.name, overrides)
-        out_name = (Path(file.filename or "model").stem) + "_model_vw.py"
+        out_name = (Path(fname or "model").stem) + "_model_vw.py"
         return JSONResponse({
             "ok": True,
             "filename": out_name,
