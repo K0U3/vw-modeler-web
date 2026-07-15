@@ -1142,8 +1142,21 @@ def extract_sashes(doc, xo, yo):
 
 
 def extract_insulation(doc, xo, yo):
-    """断熱レイヤーの SOLID / 閉ポリライン → フットプリント（そのまま立ち上げ）"""
-    items = []
+    """断熱レイヤーの立ち上げ対象を抽出する。
+    SOLID / 閉ポリライン → フットプリント（そのまま押し出し）
+    LINE / 開ポリラインの辺 → 壁のライン（垂直面 wall_sheet で立ち上げ）
+    返り値: (items, segs)"""
+    items, segs = [], []
+    seen_seg = set()
+
+    def add_seg(x1, y1, x2, y2):
+        if max(abs(x2 - x1), abs(y2 - y1)) < 50:
+            return   # ゴミ線（50mm未満）は無視
+        key = (min((x1, y1), (x2, y2)), max((x1, y1), (x2, y2)))
+        if key not in seen_seg:
+            seen_seg.add(key)
+            segs.append([x1, y1, x2, y2])
+
     for e in iter_world(doc, expand_parts=True):
         if not _is_insul_layer(getattr(e.dxf, 'layer', '')):
             continue
@@ -1158,12 +1171,20 @@ def extract_insulation(doc, xo, yo):
                     pts.append(p)
             if len(pts) >= 3:
                 items.append({'pts': pts, 'bbox': bbox_of(pts)})
+        elif t == 'LINE':
+            s, en = e.dxf.start, e.dxf.end
+            add_seg(round(s.x - xo), round(s.y - yo),
+                    round(en.x - xo), round(en.y - yo))
         elif t in ('POLYLINE', 'LWPOLYLINE'):
             pts, closed = get_pts(e)
             if closed and len(pts) >= 3:
                 g = [(round(x - xo), round(y - yo)) for x, y in pts]
                 items.append({'pts': g, 'bbox': bbox_of(g)})
-    return items
+            elif len(pts) >= 2:
+                g = [(round(x - xo), round(y - yo)) for x, y in pts]
+                for k in range(len(g) - 1):
+                    add_seg(g[k][0], g[k][1], g[k + 1][0], g[k + 1][1])
+    return items, segs
 
 
 def extract_furniture_extra(doc, xo, yo, envelopes):
@@ -1317,10 +1338,11 @@ def extract_ceiling_beams(doc, xo, yo, ch_positions, wall_bbs=None):
     return beams
 
 
-def self_check(doc, xo, yo, model_polys, model_rects):
+def self_check(doc, xo, yo, model_polys, model_rects, extra_ref_segs=None):
     """生成ジオメトリとDXF図面のセルフチェック（突き合わせ）。
     図面の壁系レイヤーの線・ポリライン辺を50mmグリッドセルに落とし、
     生成した壁・窓・建具の輪郭セルと比較する。
+    extra_ref_segs: 壁系レイヤー外だが正解として扱う線分（断熱線など）
     返り値: {'recall': 図面線の再現率, 'precision': 生成側の適合率,
              'offset': 系統ズレ[dx,dy]mm or None, 'warnings': [...]}"""
     GRID = 50
@@ -1351,6 +1373,8 @@ def self_check(doc, xo, yo, model_polys, model_rects):
             for k in range(rng):
                 p, q = g[k], g[(k + 1) % len(g)]
                 seg_cells(p[0], p[1], q[0], q[1], ref)
+    for s_ in (extra_ref_segs or []):
+        seg_cells(s_[0], s_[1], s_[2], s_[3], ref)
 
     # 生成側: 壁ポリ実頂点 + 壁矩形（外周帯・内壁・建具枠・窓帯）の輪郭
     model = set()
@@ -2221,6 +2245,45 @@ def build_script(dxf_path, overrides=None):
     # 外部階段・建物外 = グリッド東端より STAIR_GAP 以上東の塊を除外
     # （グリッド未検出 gx_max=0 の図面では全滅を防ぐためカットしない）
     stair_cut = (gx_max + STAIR_GAP) if gx_max > 0 else float('inf')
+    # サッシ・建具はアンカー計算と本抽出で共用する（二重走査を避ける）
+    _pre_sashes = extract_sashes(doc, xo, yo)
+    _pre_doors = extract_door_units(doc, xo, yo)
+    if gx_max > 0:
+        # 寸法グリッドが建物の一部しか覆っていない図面（林A等）では
+        # gx_max が建物幅より小さく、建物本体まで誤って切ってしまう。
+        # 「屋内にしか無い要素」（部屋ラベル・サッシ・建具）の東端まで
+        # カットを延長する。外部階段・別図詳細にはこれらが無いので
+        # 従来どおり切れる（3Dテスト・花見川の外部階段で確認済み）
+        # ※CH注記は階段詳細・断面にも書かれるためアンカーにしない
+        # ※表題欄の「2LDK」等・建具表の孤立シンボルを誤ってアンカーに
+        #   しないよう、壁閉ポリの近く（=建物の中）にある要素だけ使う
+        def _near_wall_poly(bx1, by1, bx2, by2, tol):
+            for _p in polys:
+                _pb = _p['bbox']
+                if bx1 - tol <= _pb[2] and _pb[0] <= bx2 + tol and \
+                   by1 - tol <= _pb[3] and _pb[1] <= by2 + tol:
+                    return True
+            return False
+
+        _anchor_x = []
+        _kws = [kw for _, ks in ROOM_KEYWORDS for kw in ks]
+        for _txt, _tx, _ty in _iter_texts_pos(doc):
+            _t = _txt.strip().upper()
+            # 長文は表題欄・注記の可能性があるので部屋ラベルとみなさない
+            if len(_t) <= 12 and any(kw in _t for kw in _kws) and \
+                    _near_wall_poly(_tx - xo, _ty - yo,
+                                    _tx - xo, _ty - yo, 2000):
+                _anchor_x.append(_tx - xo)
+        for _s in _pre_sashes:
+            _b = _s['bbox']
+            if _near_wall_poly(_b[0], _b[1], _b[2], _b[3], 1000):
+                _anchor_x.append(_b[2])
+        for _u in _pre_doors:
+            _b = _u['bbox']
+            if _near_wall_poly(_b[0], _b[1], _b[2], _b[3], 1000):
+                _anchor_x.append(_b[2])
+        if _anchor_x:
+            stair_cut = max(stair_cut, max(_anchor_x) + STAIR_GAP)
     polys = [p for p in polys if p['bbox'][0] < stair_cut]
 
     # 輪郭線（塗り率の高い大型閉ポリ=RC躯体の外形線等）を壁帯から分離し、
@@ -2364,13 +2427,21 @@ def build_script(dxf_path, overrides=None):
                            't': t, 'segments': segments, 'openings': openings})
 
     # ── クラス別立ち上げ: 建具ユニット・インナーサッシ・断熱 ──
-    door_units = extract_door_units(doc, xo, yo)
-    sashes = extract_sashes(doc, xo, yo)
-    insul = extract_insulation(doc, xo, yo)
+    door_units = _pre_doors
+    sashes = _pre_sashes
+    insul, insul_segs = extract_insulation(doc, xo, yo)
     if gx_max > 0:
         door_units = [u for u in door_units if u['bbox'][0] < stair_cut]
         sashes = [s for s in sashes if s['bbox'][0] < stair_cut]
         insul = [i for i in insul if i['bbox'][0] < stair_cut]
+        insul_segs = [s for s in insul_segs
+                      if min(s[0], s[2]) < stair_cut]
+    # 建物外形が特定できた図面では建物外の断熱線は立ち上げない
+    if envelopes:
+        insul_segs = [s for s in insul_segs
+                      if any(e_[0] - 200 <= (s[0] + s[2]) / 2 <= e_[2] + 200 and
+                             e_[1] - 200 <= (s[1] + s[3]) / 2 <= e_[3] + 200
+                             for e_ in envelopes)]
 
     # ── 玄関扉（片開き・必ず1箇所）: 玄関ラベル最寄りの開き戸ARC → 3方枠+扉 ──
     entrance = None
@@ -2480,56 +2551,77 @@ def build_script(dxf_path, overrides=None):
     # 上（まぐさ〜CH）の壁ラインを sash_strips として残す（WIN_OVERRIDES連動）
     open_boxes = [s['bbox'] for s in sashes] + [u['open'] for u in door_units]
     sash_strips = {i: [] for i in range(len(sashes))}   # サッシidx → 壁ライン区間
+    insul_chk_strips = []   # 断熱線上の窓穴区間（セルフチェック用）
+    # 断熱線は軸平行なら端点を正規化（生の線は端点順が不定のため）
+    insul_segs = [([min(s[0], s[2]), min(s[1], s[3]),
+                    max(s[0], s[2]), max(s[1], s[3])]
+                   if s[0] == s[2] or s[1] == s[3] else s)
+                  for s in insul_segs]
     if open_boxes:
         door_boxes = [u['open'] for u in door_units]
         new_frames = []
-        for f in frames:
+        new_insul_segs = []
+        # 外周帯と断熱線を同じロジックで窓・建具位置で分割する
+        _sheet_src = [(f, new_frames, False) for f in frames] + \
+                     [(s_, new_insul_segs, True) for s_ in insul_segs]
+        for f, _dst, _is_insul in _sheet_src:
+            if _is_insul and f[0] != f[2] and f[1] != f[3]:
+                _dst.append(f)   # 斜めの断熱線は分割せずそのまま
+                continue
             horiz_f = (f[2] - f[0]) >= (f[3] - f[1])
             lo, hi = (f[0], f[2]) if horiz_f else (f[1], f[3])
             cross = (f[1] + f[3]) / 2 if horiz_f else (f[0] + f[2]) / 2
+            # 外周帯はサッシ帯にスナップ済みなので±1mm。断熱線は壁面から
+            # 断熱厚み分オフセットして描かれるため±200mm（SOLID側の
+            # _cut_band_for_windows expand=200 と同じ余裕）で交差判定する
+            _tol = 200 if _is_insul else 1
             ivs = []   # (a1, a2, sash_idx or None)
             for idx, s in enumerate(sashes):
                 b = s['bbox']
                 if horiz_f:
-                    if not (b[1] - 1 <= cross <= b[3] + 1):
+                    if not (b[1] - _tol <= cross <= b[3] + _tol):
                         continue
                     a1, a2 = max(lo, b[0]), min(hi, b[2])
                 else:
-                    if not (b[0] - 1 <= cross <= b[2] + 1):
+                    if not (b[0] - _tol <= cross <= b[2] + _tol):
                         continue
                     a1, a2 = max(lo, b[1]), min(hi, b[3])
                 if a2 > a1:
                     ivs.append((a1, a2, idx))
             for b in door_boxes:
                 if horiz_f:
-                    if not (b[1] - 1 <= cross <= b[3] + 1):
+                    if not (b[1] - _tol <= cross <= b[3] + _tol):
                         continue
                     a1, a2 = max(lo, b[0]), min(hi, b[2])
                 else:
-                    if not (b[0] - 1 <= cross <= b[2] + 1):
+                    if not (b[0] - _tol <= cross <= b[2] + _tol):
                         continue
                     a1, a2 = max(lo, b[1]), min(hi, b[3])
                 if a2 > a1:
                     ivs.append((a1, a2, None))
             if not ivs:
-                new_frames.append(f)
+                _dst.append(f)
                 continue
-            ivs.sort()
+            # idx=None（建具）と int（サッシ）が混在するため位置だけでソート
+            ivs.sort(key=lambda t: (t[0], t[1]))
             pos = lo
             for a1, a2, idx in ivs:
                 a1 = max(a1, pos)
                 if a1 - pos >= 50:
-                    new_frames.append([pos, f[1], a1, f[3]] if horiz_f
-                                      else [f[0], pos, f[2], a1])
+                    _dst.append([pos, f[1], a1, f[3]] if horiz_f
+                                else [f[0], pos, f[2], a1])
                 if a2 > a1 and idx is not None:
                     seg = ([round(a1), f[1], round(a2), f[3]] if horiz_f
                            else [f[0], round(a1), f[2], round(a2)])
                     sash_strips[idx].append(seg)
+                    if _is_insul:
+                        insul_chk_strips.append(seg)
                 pos = max(pos, a2)
             if hi - pos >= 50:
-                new_frames.append([pos, f[1], hi, f[3]] if horiz_f
-                                  else [f[0], pos, f[2], hi])
+                _dst.append([pos, f[1], hi, f[3]] if horiz_f
+                            else [f[0], pos, f[2], hi])
         frames = [[round(v) for v in f] for f in new_frames]
+        insul_segs = [[round(v) for v in s_] for s_ in new_insul_segs]
         for w in part_walls:
             r = w['rect']
             new_segs = []
@@ -2827,7 +2919,15 @@ def build_script(dxf_path, overrides=None):
                             heal_exclude, envelopes)
     _chk_rects += heal_rects
 
-    check = self_check(doc, xo, yo, _chk_polys, _chk_rects)
+    # 断熱線（垂直面）と窓穴区間も生成側・正解側の両方に含める
+    # ※斜め線は矩形扱いされると幻の外周セルが生じ、部屋のフラッド
+    #   フィルも分断するため除外（3D出力自体には含まれる）
+    _insul_chk = [list(s_) for s_ in insul_segs
+                  if s_[0] == s_[2] or s_[1] == s_[3]] + list(insul_chk_strips)
+    _chk_rects += _insul_chk
+
+    check = self_check(doc, xo, yo, _chk_polys, _chk_rects,
+                       extra_ref_segs=_insul_chk)
     if scale_ratio and not (0.95 <= scale_ratio <= 1.05):
         check['warnings'].append(
             f'寸法記載値と実測の比が {scale_ratio:.2f}'
@@ -3709,6 +3809,13 @@ def build_script(dxf_path, overrides=None):
             a(f'poly([{flat(it["pts"])}], CH)   # 断熱 {it["bbox"]}')
         a('')
 
+    if insul_segs:
+        a(f'# 断熱ライン {len(insul_segs)} 本'
+          f'（断熱レイヤーの線をそのまま垂直面で立ち上げ・窓位置は穴あき）')
+        for s_ in insul_segs:
+            a(f'wall_sheet({s_[0]}, {s_[1]}, {s_[2]}, {s_[3]}, CH)   # 断熱ライン')
+        a('')
+
     def emit_split(label, bb, wins):
         sy1, sy2 = bb[1], bb[3]
         x1, x2 = bb[0], bb[2]
@@ -3985,7 +4092,8 @@ def build_script(dxf_path, overrides=None):
     a('vs.AlrtDialog(')
     a(f"    '3D モデル生成完了\\n\\n'")
     a(f"    '躯体壁 {len(walls)} / 内壁 {len(part_walls)} / 外周帯 {len(frames)}\\n'")
-    a(f"    '建具 {len(door_units)}（{ent_line}） / サッシ窓 {len(sashes)} / 断熱 {len(insul)}\\n'")
+    a(f"    '建具 {len(door_units)}（{ent_line}） / サッシ窓 {len(sashes)}"
+      f" / 断熱 {len(insul) + len(insul_segs)}\\n'")
     a(f"    '窓 {len(win_registry)} / 天井梁 {len(ceil_beams)} / 天井 {len(ceilings)}室 / バルコニー {len(balconies)}\\n'")
     a(f"    '南窓 {len(swins)} / 北窓 {len(nwins)} / 東FIX {len(ewins)}\\n'")
     a(f"    '梁 {len(beams)} / 家具 配置{len(placed)} ベッド{len(beds_simple)} ソファ{len(sofas_simple)} 簡易{len(boxed)} 未マッチ{len(unmatched)}\\n'")
@@ -4022,7 +4130,7 @@ def build_script(dxf_path, overrides=None):
         'door_panels': sum(len(u['panels']) for u in door_units),
         'entrance': bool(entrance),
         'sashes': len(sashes),
-        'insulation': len(insul),
+        'insulation': len(insul) + len(insul_segs),
         'windows': len(win_registry),
         'window_list': [{'no': n, 'kind': k, 'bbox': [a1, b1, a2, b2], 'note': nt}
                         for n, k, a1, b1, a2, b2, nt in win_registry],
