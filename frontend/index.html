@@ -175,9 +175,30 @@
     fd.append('sill_haki', sill_haki.value); fd.append('head_haki', head_haki.value);
     try {
       const r = await fetch('/generate', { method: 'POST', body: fd });
-      const j = await r.json();
+      let j;
+      try {
+        j = await r.json();
+      } catch (_) {
+        // サーバーがJSON以外を返した（Vercelの制限エラー等）→ ステータスから原因を説明
+        const smap = {
+          413: 'ファイルが大きすぎます（圧縮後も上限4.5MB超過）。不要なレイヤー・画像を削除したDXFでお試しください',
+          504: '生成がタイムアウトしました（クラウド版は60秒まで）。図面を軽くして再試行してください',
+          502: 'サーバーが一時的に応答していません。少し待ってから再試行してください',
+          401: 'IDまたはパスワードが違います。ページを再読み込みして入力し直してください',
+        };
+        err.textContent = '⚠ サーバーエラー (HTTP ' + r.status + ')\n原因: '
+          + (smap[r.status] || '不明。再試行しても出る場合はこの画面のスクショを相川まで送ってください');
+        err.style.whiteSpace = 'pre-line';
+        return;
+      }
       if (!j.ok) {
-        err.textContent = '⚠ ' + j.error;
+        // エラーは「何が起きたか・原因・対処」をセットで表示する
+        let msg = '⚠ ' + (j.error || '生成に失敗しました');
+        if (j.cause) msg += '\n原因: ' + j.cause;
+        if (j.hint) msg += '\n対処: ' + j.hint;
+        if (j.where) msg += '\n（発生箇所: ' + j.where + '）';
+        err.textContent = msg;
+        err.style.whiteSpace = 'pre-line';
         if (j.needs_ch) {   // 天井高が特定できない → CH入力欄を強調
           ch.style.borderColor = '#b3261e';
           ch.focus();
@@ -225,7 +246,10 @@
       result.querySelector('pre').textContent = j.script;
       actions.style.display = 'flex';
     } catch (e) {
-      err.textContent = '⚠ 通信エラー: ' + e.message;
+      err.textContent = '⚠ 通信エラー: ' + e.message
+        + '\n原因: ネットワークが切れたか、サーバーに接続できていません'
+        + '\n対処: 接続を確認して再試行してください。続く場合は相川まで連絡してください';
+      err.style.whiteSpace = 'pre-line';
     } finally {
       go.disabled = false; go.textContent = 'スクリプトを生成';
     }

@@ -55,6 +55,37 @@ class CeilingHeightRequired(ValueError):
     """天井高が特定できない（ユーザー指定なし・図面注記なし）"""
 
 
+def explain_error(e):
+    """生成時の例外から利用者向けの（原因, 対処）を返す。
+    Webツール・CLIの両方でエラー表示に使う"""
+    t = type(e).__name__
+    low = str(e).lower()
+    if isinstance(e, CeilingHeightRequired):
+        return ('図面から天井高の注記（「CH≒2400」「天井高2400」等）を検出できない',
+                '天井高(mm)を入力して再生成してください')
+    if isinstance(e, FileNotFoundError):
+        return ('ファイルが見つからない', 'ファイルのパスを確認してください')
+    if isinstance(e, MemoryError):
+        return ('図面が大きすぎてメモリ不足',
+                '不要なレイヤー・画像・ハッチングを削除したDXFで再試行してください')
+    if isinstance(e, UnicodeDecodeError):
+        return ('文字コードが想定外で読み込めない',
+                'VWから「DXFテキスト」形式で書き出し直してください')
+    if t in ('DXFStructureError', 'DXFVersionError', 'DXFError') or \
+            ('dxf' in low and ('invalid' in low or 'structure' in low
+                               or 'not a dxf' in low)):
+        return ('DXFとして読み込めない（ファイルが壊れているか、DXF以外の形式）',
+                'VWの ファイル > 取り出す > DXF/DWG で「DXFテキスト」形式で'
+                '書き出し直してください（DWG・PDFは不可）')
+    if t in ('BadGzipFile', 'EOFError') or 'gzip' in low or 'crc' in low \
+            or 'compressed' in low:
+        return ('アップロードデータが途中で壊れた（圧縮データが不完全）',
+                'ページを再読み込みして、もう一度アップロードしてください')
+    return ('想定外のエラー（図面の構成がツール未対応の可能性）',
+            'このエラー表示のスクリーンショットとDXFファイルを相川まで'
+            '送ってください。順次対応します')
+
+
 # ─────────────────────────────────────────────
 # 調整パラメータ
 # ─────────────────────────────────────────────
@@ -2933,6 +2964,12 @@ def build_script(dxf_path, overrides=None):
             f'寸法記載値と実測の比が {scale_ratio:.2f}'
             '（cm図面/inch等の単位ミスの疑い）— DXF書き出し単位を確認')
     check['scale_ratio'] = scale_ratio
+    if not walls and not frames and not frame_quads and not part_walls:
+        check['warnings'].append(
+            '壁が1枚も生成されていません。原因: 壁レイヤー名が'
+            '「躯体・壁・建具・外壁・内壁」のいずれにも一致しないか、'
+            '壁が閉ポリライン/二重線で描かれていない可能性 — '
+            '詳細設定の「躯体レイヤー」に図面の壁レイヤー名を追加してください')
 
     # ── 部屋天井（CH注記に追従）とバルコニー ──
     # 壁+建具+サッシで囲まれた領域をラベル位置からフラッドフィルで特定する
@@ -4148,7 +4185,34 @@ def build_script(dxf_path, overrides=None):
         'check': check,
         'bbox': [fx1, fy1, fx2, fy2],
     }
-    return '\n'.join(L), summary
+    # ── VW実行時のエラーにも原因を表示する: スクリプト全体を try で包む ──
+    # 先頭の import vs だけ外に置き、本体は4スペース字下げして try 配下に入れる
+    _head, _body = L[:1], L[1:]
+    wrapped = _head + ['', 'try:'] + \
+        [('    ' + ln) if ln else '' for ln in _body] + [
+        'except Exception:',
+        '    import traceback',
+        '    _t = traceback.format_exc()',
+        '    _cause = \'不明。下記の詳細スクショとDXFを相川まで送ってください\'',
+        '    for _pat, _c in (',
+        "        ('ImportResToCurFileN', '家具ライブラリ(MUJI家具vwx)の読み込みに失敗。"
+        "スクリプト冒頭のMUJI_LIBのパスを確認'),",
+        "        ('BuildResourceList', '家具ライブラリ(MUJI家具vwx)が見つからない。"
+        "スクリプト冒頭のMUJI_LIBのパスを確認'),",
+        "        ('AttributeError', 'このVectorworksのバージョンに無いAPIを呼んだ可能性"
+        "（VW2021で動作確認済み）'),",
+        "        ('DoMenuTextByName', 'メニュー名がVWの言語設定と一致しない可能性'),",
+        "        ('MemoryError', 'モデルが大きすぎてメモリ不足'),",
+        '    ):',
+        '        if _pat in _t:',
+        '            _cause = _c',
+        '            break',
+        "    vs.AlrtDialog('スクリプト実行エラー\\n\\n原因の推定: ' + _cause"
+        " + '\\n\\n詳細（末尾）:\\n' + _t[-600:])",
+        '    raise',
+        '',
+    ]
+    return '\n'.join(wrapped), summary
 
 
 def generate(dxf_path, out_path, ch=None):
@@ -4222,6 +4286,12 @@ def main():
         else:
             print(f'エラー: {e} --ch <mm> を指定してください', file=sys.stderr)
             sys.exit(2)
+    except Exception as e:
+        cause, hint = explain_error(e)
+        print(f'エラー: {type(e).__name__}: {e}', file=sys.stderr)
+        print(f'  原因: {cause}', file=sys.stderr)
+        print(f'  対処: {hint}', file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == '__main__':

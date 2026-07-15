@@ -87,7 +87,15 @@ async def generate(
     fname = file.filename or "in.dxf"
     if fname.endswith(".gz") or data[:2] == b"\x1f\x8b":
         import gzip as _gz
-        data = _gz.decompress(data)
+        try:
+            data = _gz.decompress(data)
+        except Exception as e:
+            # 圧縮アップロードが壊れている → 原因つきで返す
+            cause, hint = engine.explain_error(e)
+            return JSONResponse({"ok": False,
+                                 "error": f"{type(e).__name__}: {e}",
+                                 "cause": cause, "hint": hint},
+                                status_code=400)
         fname = fname[:-3] if fname.endswith(".gz") else fname
     suffix = Path(fname).suffix or ".dxf"
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
@@ -129,9 +137,19 @@ async def generate(
         })
     except engine.CeilingHeightRequired as e:
         # 天井高が特定できない → フロントでCH入力を促す
-        return JSONResponse({"ok": False, "needs_ch": True, "error": str(e)},
+        cause, hint = engine.explain_error(e)
+        return JSONResponse({"ok": False, "needs_ch": True, "error": str(e),
+                             "cause": cause, "hint": hint},
                             status_code=422)
     except Exception as e:
-        return JSONResponse({"ok": False, "error": str(e)}, status_code=400)
+        # 原因と対処をエラーメッセージに添えて返す（フロントで表示）
+        cause, hint = engine.explain_error(e)
+        import traceback
+        tb = traceback.extract_tb(e.__traceback__)
+        where = f"{tb[-1].name}:{tb[-1].lineno}" if tb else ""
+        return JSONResponse({"ok": False,
+                             "error": f"{type(e).__name__}: {e}",
+                             "cause": cause, "hint": hint, "where": where},
+                            status_code=400)
     finally:
         os.unlink(tmp.name)
