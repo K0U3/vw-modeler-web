@@ -88,9 +88,10 @@
       <div id="wintable"></div>
       <div class="hint">番号はモデル内に「窓n」の文字で表示されています。掃き出し窓は床から立ち上がるため腰壁高さはありません。</div>
       <div class="actions" style="margin-top:10px">
-        <button id="winapply">調整を反映したスクリプトを生成（ダウンロード）</button>
+        <button class="ghost" id="winapply" style="width:auto">変更をスクリプトに反映</button>
+        <button id="wingen" style="width:auto;margin:0">調整済みスクリプトを生成（ダウンロード）</button>
       </div>
-      <div class="hint" id="winapplied" style="display:none;color:var(--ok)">✓ 調整を反映したスクリプトを生成しました。VWで実行すると前回分を消して調整後の窓で作り直されます。</div>
+      <div class="hint" id="winapplied" style="display:none;color:var(--ok)"></div>
     </div>
     <div class="actions" id="actions" style="display:none">
       <button class="ghost" id="copy">コピー</button>
@@ -282,13 +283,25 @@
     if (pre) pre.textContent = lastScript;
   }
 
-  // 調整を反映したスクリプトを生成してダウンロード
+  // 「変更をスクリプトに反映」: 表示中のスクリプトへ調整内容を書き込む
   document.getElementById('winapply').addEventListener('click', () => {
-    applyWinSettings();   // 念のため最新の入力値を反映
+    applyWinSettings();
+    const pre = result.querySelector('pre');
+    if (pre) pre.textContent = lastScript;
+    const msg = document.getElementById('winapplied');
+    msg.textContent = '✓ 変更をスクリプトに反映しました（右下のスクリプトの WIN_SETTINGS が更新されています）';
+    msg.style.display = 'block';
+  });
+
+  // 「調整済みスクリプトを生成」: 反映した上でダウンロード
+  document.getElementById('wingen').addEventListener('click', () => {
+    applyWinSettings();
     const blob = new Blob([lastScript], { type: 'text/x-python' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = lastName; a.click();
-    document.getElementById('winapplied').style.display = 'block';
+    const msg = document.getElementById('winapplied');
+    msg.textContent = '✓ 調整を反映したスクリプトをダウンロードしました。VWで実行すると前回分を消して調整後の窓で作り直されます';
+    msg.style.display = 'block';
     const pre = result.querySelector('pre');
     if (pre) pre.textContent = lastScript;
   });

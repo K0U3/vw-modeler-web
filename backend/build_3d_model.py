@@ -887,6 +887,56 @@ def _pair_segs_to_bands(segs, min_gap, max_gap, tail=300):
     return bands, leftover
 
 
+def _top_caps(sheet_segs, face_segs, min_gap=30, max_gap=400):
+    """残った垂直シート（厚みなし壁ライン）と、最寄りの平行な面の間を
+    天井高さで蓋する薄板を返す。ペア化できなかった2本線壁（別レイヤー
+    同士・間隔広め等）でも上から壁の内部が見えないようにする。
+    max_gap=400: 壁厚の範囲。廊下等の空間（≥700）は蓋しない。
+    返り値: [x1, y1, x2, y2] のリスト（重複除去済み）"""
+    pool_h, pool_v = [], []
+    for s in face_segs + sheet_segs:
+        if s[1] == s[3] and s[2] > s[0]:
+            pool_h.append(s)
+        elif s[0] == s[2] and s[3] > s[1]:
+            pool_v.append(s)
+    caps, seen = [], set()
+    for s in sheet_segs:
+        horiz = s[1] == s[3] and s[2] > s[0]
+        vert = s[0] == s[2] and s[3] > s[1]
+        if not horiz and not vert:
+            continue
+        pool = pool_h if horiz else pool_v
+        # 両側それぞれの最寄り面1つとだけ蓋を作る（廊下の屋根化を防ぐ）
+        best = {1: None, -1: None}   # 方向 → (gap, 相手)
+        for t in pool:
+            if t is s:
+                continue
+            gap = (t[1] - s[1]) if horiz else (t[0] - s[0])
+            side = 1 if gap > 0 else -1
+            gap = abs(gap)
+            if not (min_gap <= gap <= max_gap):
+                continue
+            lo = max(s[0], t[0]) if horiz else max(s[1], t[1])
+            hi = min(s[2], t[2]) if horiz else min(s[3], t[3])
+            if hi - lo < 300:
+                continue
+            if best[side] is None or gap < best[side][0]:
+                best[side] = (gap, t, lo, hi)
+        for side in (1, -1):
+            if best[side] is None:
+                continue
+            _, t, lo, hi = best[side]
+            if horiz:
+                r = [lo, min(s[1], t[1]), hi, max(s[1], t[1])]
+            else:
+                r = [min(s[0], t[0]), lo, max(s[0], t[0]), hi]
+            key = tuple(r)
+            if key not in seen:
+                seen.add(key)
+                caps.append(r)
+    return caps
+
+
 def _pt_in_poly(x, y, pts):
     """点(x,y)がポリゴンpts内にあるか（レイキャスト）"""
     inside = False
@@ -3100,6 +3150,47 @@ def build_script(dxf_path, overrides=None):
 
     check = self_check(doc, xo, yo, _chk_polys, _chk_rects,
                        extra_ref_segs=_insul_chk + _ins_ref)
+
+    # ── 壁上部の蓋: 残った平行シート間（壁厚範囲30-400mm）を天井高さで塞ぐ ──
+    # ペア化できなかった2本線壁（別レイヤー同士・間隔広め）の筒を上から隠す
+    _face_pool = []
+    for _fb in frame_bands:
+        _face_pool += [[_fb[0], _fb[1], _fb[2], _fb[1]],
+                       [_fb[0], _fb[3], _fb[2], _fb[3]],
+                       [_fb[0], _fb[1], _fb[0], _fb[3]],
+                       [_fb[2], _fb[1], _fb[2], _fb[3]]]
+    for _it in insul:
+        _fb = _it['bbox']
+        _face_pool += [[_fb[0], _fb[1], _fb[2], _fb[1]],
+                       [_fb[0], _fb[3], _fb[2], _fb[3]],
+                       [_fb[0], _fb[1], _fb[0], _fb[3]],
+                       [_fb[2], _fb[1], _fb[2], _fb[3]]]
+    for _rr in wall_cut_rects:
+        _face_pool += [[_rr[0], _rr[1], _rr[2], _rr[1]],
+                       [_rr[0], _rr[3], _rr[2], _rr[3]],
+                       [_rr[0], _rr[1], _rr[0], _rr[3]],
+                       [_rr[2], _rr[1], _rr[2], _rr[3]]]
+    for _pw in part_walls:
+        _fb = _pw['rect']
+        _face_pool += [[_fb[0], _fb[1], _fb[2], _fb[1]],
+                       [_fb[0], _fb[3], _fb[2], _fb[3]],
+                       [_fb[0], _fb[1], _fb[0], _fb[3]],
+                       [_fb[2], _fb[1], _fb[2], _fb[3]]]
+    for _pp in walls:
+        _g = _pp['pts']
+        for _k in range(len(_g)):
+            _pa, _pb = _g[_k], _g[(_k + 1) % len(_g)]
+            if abs(_pa[0] - _pb[0]) <= 5:
+                _face_pool.append([round(_pa[0]), round(min(_pa[1], _pb[1])),
+                                   round(_pa[0]), round(max(_pa[1], _pb[1]))])
+            elif abs(_pa[1] - _pb[1]) <= 5:
+                _face_pool.append([round(min(_pa[0], _pb[0])), round(_pa[1]),
+                                   round(max(_pa[0], _pb[0])), round(_pa[1])])
+    _sheet_pool = [list(f_) for f_ in frames] + \
+        [list(s_) for s_ in insul_segs
+         if s_[0] == s_[2] or s_[1] == s_[3]] + \
+        [list(r_) for r_ in heal_rects]
+    wall_top_caps = _top_caps(_sheet_pool, _face_pool)
     if scale_ratio and not (0.95 <= scale_ratio <= 1.05):
         check['warnings'].append(
             f'寸法記載値と実測の比が {scale_ratio:.2f}'
@@ -4063,6 +4154,13 @@ def build_script(dxf_path, overrides=None):
           f'（図面に有るのに未生成だった壁線を、ラインのまま垂直面で補完）')
         for r in heal_rects:
             a(f'wall_sheet({r[0]}, {r[1]}, {r[2]}, {r[3]}, CH)   # 補完壁')
+        a('')
+
+    if wall_top_caps:
+        a(f'# 壁上部の蓋 {len(wall_top_caps)} 枚'
+          f'（2本線壁の筒を天井高さで塞ぐ。上から壁の内部が見えないように）')
+        for r in wall_top_caps:
+            a(f'rect({r[0]}, {r[1]}, {r[2]}, {r[3]}, 50, CH - 50)   # 壁上蓋')
         a('')
 
     if outline_dropped:
