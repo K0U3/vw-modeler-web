@@ -814,13 +814,100 @@ def split_outlines(polys):
     return bands, outlines
 
 
+def _pair_segs_to_bands(segs, min_gap, max_gap, tail=300):
+    """平行な軸整列線分のペア → 帯矩形[x1,y1,x2,y2]（ペア線の間を埋める）。
+    壁・断熱が2本線で描かれている箇所をソリッドで立ち上げるために使う。
+    端の食い違いが tail 以下なら長い方に合わせて角まで埋める。
+    返り値: (bands, ペア化できなかった線分)"""
+    hs, vs, other = [], [], []
+    for s in segs:
+        x1, y1, x2, y2 = s
+        if y1 == y2 and x2 > x1:
+            hs.append(s)
+        elif x1 == x2 and y2 > y1:
+            vs.append(s)
+        else:
+            other.append(s)
+    bands = []
+    leftover = list(other)
+
+    def _pair(pool, horiz):
+        pool = sorted(pool, key=lambda t: (t[1] if horiz else t[0],
+                                           t[0] if horiz else t[1]))
+        used = set()
+        for i in range(len(pool)):
+            if i in used:
+                continue
+            si = pool[i]
+            ci = si[1] if horiz else si[0]
+            li, hi_ = (si[0], si[2]) if horiz else (si[1], si[3])
+            for j in range(i + 1, len(pool)):
+                if j in used:
+                    continue
+                sj = pool[j]
+                cj = sj[1] if horiz else sj[0]
+                if cj - ci > max_gap:
+                    break
+                if cj - ci < min_gap:
+                    continue
+                lj, hj = (sj[0], sj[2]) if horiz else (sj[1], sj[3])
+                ov = min(hi_, hj) - max(li, lj)
+                if ov < 300 or ov < min(hi_ - li, hj - lj) * 0.5:
+                    continue
+                lo, hi2 = max(li, lj), min(hi_, hj)
+                if abs(li - lj) <= tail:
+                    lo = min(li, lj)
+                if abs(hi_ - hj) <= tail:
+                    hi2 = max(hi_, hj)
+                bands.append([lo, ci, hi2, cj] if horiz
+                             else [ci, lo, cj, hi2])
+                # 帯に含まれなかった線のはみ出し部分はシートとして残す
+                # （長い方の線が帯の先へ続く箇所の壁が消えないように）
+                for _l, _h, _c in ((li, hi_, ci), (lj, hj, cj)):
+                    if _l < lo - 10:
+                        leftover.append([_l, _c, lo, _c] if horiz
+                                        else [_c, _l, _c, lo])
+                    if _h > hi2 + 10:
+                        leftover.append([hi2, _c, _h, _c] if horiz
+                                        else [_c, hi2, _c, _h])
+                used.add(i)
+                used.add(j)
+                break
+        for k in range(len(pool)):
+            if k not in used:
+                leftover.append(pool[k])
+    _pair(hs, True)
+    _pair(vs, False)
+    return bands, leftover
+
+
+def _pt_in_poly(x, y, pts):
+    """点(x,y)がポリゴンpts内にあるか（レイキャスト）"""
+    inside = False
+    n = len(pts)
+    for i in range(n):
+        x1, y1 = pts[i]
+        x2, y2 = pts[(i + 1) % n]
+        if (y1 > y) != (y2 > y):
+            xi = x1 + (y - y1) * (x2 - x1) / (y2 - y1)
+            if xi > x:
+                inside = not inside
+    return inside
+
+
 def outline_frames(outlines):
     """二重外形（RC躯体の外形線+内形線）を『壁ラインそのまま』立ち上げる。
     それぞれの輪郭線を線中心・厚WALL_LINE_Tの壁に変換（図面の線と壁面が一致）。
     ペアにならなかった建物スケールの単独輪郭も同様に立ち上げ、
     家具スケールのものは破棄リストで返す（家具照合フローが扱う）。
-    返り値: (frames[縮退矩形=ライン], frame_quads[斜めライン端点], dropped, envelopes)"""
+    同心ペアのエッジは _pair_segs_to_bands で壁厚を埋めたソリッド帯にする
+    （厚みなしシート2枚では上から壁の内部が見えてしまうため）。
+    帯の中心が壁リング内（外形の内側かつ内形の外側）のものだけ採用し、
+    凹み・吹き抜け等の誤ペアはシートに戻す。
+    返り値: (frames[縮退矩形=ライン], frame_quads[斜めライン端点],
+             dropped, envelopes, frame_bands[ソリッド帯])"""
     frames, frame_quads, used, envelopes = [], [], set(), []
+    frame_bands = []
     outlines = sorted(
         outlines,
         key=lambda p: -(p['bbox'][2] - p['bbox'][0]) * (p['bbox'][3] - p['bbox'][1]))
@@ -837,10 +924,26 @@ def outline_frames(outlines):
                 used.add(i)
                 used.add(j)
                 envelopes.append(list(ob))
-                # 外形線・内形線それぞれを「壁ラインそのまま」立ち上げる
+                # 外形線・内形線のエッジをペア化 → 壁厚を埋めたソリッド帯
                 r1, q1 = _edge_walls(outer['pts'])
                 r2, q2 = _edge_walls(outlines[j]['pts'])
-                frames += r1 + r2
+                _bands, _left = _pair_segs_to_bands(
+                    [[round(v) for v in e] for e in r1 + r2],
+                    min_gap=30, max_gap=1000)
+                for b in _bands:
+                    _cx = (b[0] + b[2]) / 2.0
+                    _cy = (b[1] + b[3]) / 2.0
+                    if _pt_in_poly(_cx, _cy, outer['pts']) and \
+                            not _pt_in_poly(_cx, _cy, outlines[j]['pts']):
+                        frame_bands.append(b)
+                    elif b[2] - b[0] >= b[3] - b[1]:
+                        # リング外（凹み等）の誤ペア → 2辺をシートに戻す
+                        _left += [[b[0], b[1], b[2], b[1]],
+                                  [b[0], b[3], b[2], b[3]]]
+                    else:
+                        _left += [[b[0], b[1], b[0], b[3]],
+                                  [b[2], b[1], b[2], b[3]]]
+                frames += _left
                 frame_quads += q1 + q2
                 break
     dropped = []
@@ -856,7 +959,7 @@ def outline_frames(outlines):
             frame_quads += q1
         else:
             dropped.append(p)   # 家具スケール → 家具照合フローに任せる
-    return frames, frame_quads, dropped, envelopes
+    return frames, frame_quads, dropped, envelopes, frame_bands
 
 
 def _is_step_polyline(g):
@@ -2321,8 +2424,10 @@ def build_script(dxf_path, overrides=None):
     # 同心ペアは外周4辺の壁帯に変換。ペア無しはそのまま押し出すと
     # 建物全体が中身の詰まったブロックになるため破棄（コメントで報告）
     polys, _outlines = split_outlines(polys)
-    frames, frame_quads, outline_dropped, envelopes = outline_frames(_outlines)
+    frames, frame_quads, outline_dropped, envelopes, frame_bands = \
+        outline_frames(_outlines)
     frames = [[round(v) for v in f] for f in frames]
+    frame_bands = [[round(v) for v in b] for b in frame_bands]
 
     # 外形が特定できた図面では建物外の壁を出力しない
     # （バルコニー・外部廊下・隣住戸の輪郭線が壁として立ち上がり
@@ -2341,13 +2446,15 @@ def build_script(dxf_path, overrides=None):
         polys = [p for p in polys if _in_building(p['bbox'])]
         frames = [f for f in frames
                   if _seg_in_building(f[0], f[1], f[2], f[3])]
+        frame_bands = [b for b in frame_bands
+                       if _seg_in_building(b[0], b[1], b[2], b[3])]
         frame_quads = [q for q in frame_quads
                        if _seg_in_building(q[0], q[1], q[2], q[3])]
 
-    if not polys and not frames:
+    if not polys and not frames and not frame_bands:
         raise ValueError('躯体ポリラインが見つかりません。WALL_LAYERS を確認してください。')
 
-    _extent_boxes = [p['bbox'] for p in polys] + frames + \
+    _extent_boxes = [p['bbox'] for p in polys] + frames + frame_bands + \
         [[min(q[0], q[2]), min(q[1], q[3]), max(q[0], q[2]), max(q[1], q[3])]
          for q in frame_quads]
     fx1 = min(b[0] for b in _extent_boxes)
@@ -2583,19 +2690,32 @@ def build_script(dxf_path, overrides=None):
     open_boxes = [s['bbox'] for s in sashes] + [u['open'] for u in door_units]
     sash_strips = {i: [] for i in range(len(sashes))}   # サッシidx → 壁ライン区間
     insul_chk_strips = []   # 断熱線上の窓穴区間（セルフチェック用）
+    frame_win_cuts = []     # 外周壁帯（ソリッド）の窓穴（win_wall_rects用）
     # 断熱線は軸平行なら端点を正規化（生の線は端点順が不定のため）
     insul_segs = [([min(s[0], s[2]), min(s[1], s[3]),
                     max(s[0], s[2]), max(s[1], s[3])]
                    if s[0] == s[2] or s[1] == s[3] else s)
                   for s in insul_segs]
+    # 2本線で描かれた断熱 → ペアの間（=断熱厚）を埋めたソリッドにして
+    # 断熱アイテムに合流（上から内部が見えないように。窓穴は後段で連動）
+    _ins_bands, insul_segs = _pair_segs_to_bands(insul_segs,
+                                                 min_gap=20, max_gap=300)
+    _ins_band_rects = [list(_b) for _b in _ins_bands]   # セルフチェック用に保持
+    for _b in _ins_bands:
+        insul.append({'pts': [(_b[0], _b[1]), (_b[2], _b[1]),
+                              (_b[2], _b[3]), (_b[0], _b[3])],
+                      'bbox': list(_b)})
     if open_boxes:
         door_boxes = [u['open'] for u in door_units]
         new_frames = []
         new_insul_segs = []
-        # 外周帯と断熱線を同じロジックで窓・建具位置で分割する
-        _sheet_src = [(f, new_frames, False) for f in frames] + \
-                     [(s_, new_insul_segs, True) for s_ in insul_segs]
-        for f, _dst, _is_insul in _sheet_src:
+        new_frame_bands = []
+        # 外周帯・断熱線・外周壁帯（ソリッド）を同じロジックで窓・建具位置で分割
+        _sheet_src = [(f, new_frames, 'frame') for f in frames] + \
+                     [(s_, new_insul_segs, 'insul') for s_ in insul_segs] + \
+                     [(b_, new_frame_bands, 'band') for b_ in frame_bands]
+        for f, _dst, _kind in _sheet_src:
+            _is_insul = (_kind == 'insul')
             if _is_insul and f[0] != f[2] and f[1] != f[3]:
                 _dst.append(f)   # 斜めの断熱線は分割せずそのまま
                 continue
@@ -2644,15 +2764,20 @@ def build_script(dxf_path, overrides=None):
                 if a2 > a1 and idx is not None:
                     seg = ([round(a1), f[1], round(a2), f[3]] if horiz_f
                            else [f[0], round(a1), f[2], round(a2)])
-                    sash_strips[idx].append(seg)
-                    if _is_insul:
-                        insul_chk_strips.append(seg)
+                    if _kind == 'band':
+                        # ソリッド帯の窓位置 → 穴あきボリューム（WIN_SETTINGS連動）
+                        frame_win_cuts.append((idx, seg))
+                    else:
+                        sash_strips[idx].append(seg)
+                        if _is_insul:
+                            insul_chk_strips.append(seg)
                 pos = max(pos, a2)
             if hi - pos >= 50:
                 _dst.append([pos, f[1], hi, f[3]] if horiz_f
                             else [f[0], pos, f[2], hi])
         frames = [[round(v) for v in f] for f in new_frames]
         insul_segs = [[round(v) for v in s_] for s_ in new_insul_segs]
+        frame_bands = [[round(v) for v in b_] for b_ in new_frame_bands]
         for w in part_walls:
             r = w['rect']
             new_segs = []
@@ -2927,7 +3052,7 @@ def build_script(dxf_path, overrides=None):
     # ── セルフチェック: 生成ジオメトリをDXF図面と突き合わせ ──
     _chk_polys = [p['pts'] for p in walls] + \
         [[(q[0], q[1]), (q[2], q[3])] for q in frame_quads]
-    _chk_rects = list(frames) + list(wall_cut_rects)
+    _chk_rects = list(frames) + list(frame_bands) + list(wall_cut_rects)
     for w in part_walls:
         r_ = w['rect']
         for s1, s2 in w['segments']:
@@ -2956,9 +3081,19 @@ def build_script(dxf_path, overrides=None):
     _insul_chk = [list(s_) for s_ in insul_segs
                   if s_[0] == s_[2] or s_[1] == s_[3]] + list(insul_chk_strips)
     _chk_rects += _insul_chk
+    # ペア化した断熱帯: 生成側=帯矩形 / 正解側=図面の2本線（帯の長辺）
+    _ins_ref = []
+    for _b in _ins_band_rects:
+        if _b[2] - _b[0] >= _b[3] - _b[1]:
+            _ins_ref += [[_b[0], _b[1], _b[2], _b[1]],
+                         [_b[0], _b[3], _b[2], _b[3]]]
+        else:
+            _ins_ref += [[_b[0], _b[1], _b[0], _b[3]],
+                         [_b[2], _b[1], _b[2], _b[3]]]
+    _chk_rects += _ins_band_rects
 
     check = self_check(doc, xo, yo, _chk_polys, _chk_rects,
-                       extra_ref_segs=_insul_chk)
+                       extra_ref_segs=_insul_chk + _ins_ref)
     if scale_ratio and not (0.95 <= scale_ratio <= 1.05):
         check['warnings'].append(
             f'寸法記載値と実測の比が {scale_ratio:.2f}'
@@ -3541,12 +3676,22 @@ def build_script(dxf_path, overrides=None):
     a('SHOW_NUMBERS = True   # 窓・建具・天井梁の番号をモデル内に文字表記する')
     a('')
     a('def num_label(txt, x, y):')
-    a('    """要素番号をモデル内に文字表記（OVERRIDESのキー確認用）"""')
+    a('    """要素番号をモデル内に文字表記（窓の調整・OVERRIDESのキー確認用）。')
+    a('    3Dビューでも見えるように大きめの文字で天井の少し上に浮かせる"""')
     a('    if not SHOW_NUMBERS:')
     a('        return')
     a('    try:')
+    a('        try:')
+    a('            vs.TextSize(24)          # 大きめ（レイヤー縮尺で実寸化される）')
+    a('        except Exception:')
+    a('            pass')
     a('        vs.TextOrigin(x + OX, y + OY)')
     a('        vs.CreateText(txt)')
+    a('        try:')
+    a('            # 天井+200mm に浮かせてモデルに埋もれないようにする')
+    a('            vs.Move3DObj(vs.LNewObj(), 0, 0, CH + 200)')
+    a('        except Exception:')
+    a('            pass')
     a('    except Exception:')
     a('        pass')
     a('')
@@ -3820,7 +3965,7 @@ def build_script(dxf_path, overrides=None):
             a(f'rect({r[0]}, {r[1]}, {r[2]}, {r[3]}, CH)   # 分割壁')
         a('')
 
-    if wall_win_cuts or insul_win_cuts:
+    if wall_win_cuts or insul_win_cuts or frame_win_cuts:
         a(f'# 窓正面の壁・断熱の穴あき（窓サイズ: WIN_SETTINGSの幅・高さ・腰壁に連動）')
         for idx, r in wall_win_cuts:
             a(f'win_wall_rects({idx + 1}, {r[0]}, {r[1]}, {r[2]}, {r[3]})'
@@ -3828,11 +3973,21 @@ def build_script(dxf_path, overrides=None):
         for idx, r in insul_win_cuts:
             a(f'win_wall_rects({idx + 1}, {r[0]}, {r[1]}, {r[2]}, {r[3]})'
               f'   # 窓{idx + 1} 穴上下（断熱）')
+        for idx, r in frame_win_cuts:
+            a(f'win_wall_rects({idx + 1}, {r[0]}, {r[1]}, {r[2]}, {r[3]})'
+              f'   # 窓{idx + 1} 穴上下（外周壁帯）')
+        a('')
+
+    if frame_bands:
+        a(f'# 躯体外周壁 {len(frame_bands)} 帯'
+          f'（外形線と内形線の間=壁厚を埋めたソリッド。内部が見えない）')
+        for b in frame_bands:
+            a(f'rect({b[0]}, {b[1]}, {b[2]}, {b[3]}, CH)   # 外周壁帯')
         a('')
 
     if frames or frame_quads:
-        a(f'# 躯体外周壁 {len(frames) + len(frame_quads)} 片'
-          f'（壁のラインをそのまま垂直面として立ち上げ・厚みなし）')
+        a(f'# 躯体外周壁ライン {len(frames) + len(frame_quads)} 片'
+          f'（ペアにならない単独線: 垂直面として立ち上げ・厚みなし）')
         for f in frames:
             a(f'wall_sheet({f[0]}, {f[1]}, {f[2]}, {f[3]}, CH)   # 外周壁ライン')
         for q in frame_quads:
@@ -4207,7 +4362,8 @@ def build_script(dxf_path, overrides=None):
     ent_line = '玄関扉あり' if entrance else '⚠玄関扉が検出できず'
     a('vs.AlrtDialog(')
     a(f"    '3D モデル生成完了\\n\\n'")
-    a(f"    '躯体壁 {len(walls)} / 内壁 {len(part_walls)} / 外周帯 {len(frames)}\\n'")
+    a(f"    '躯体壁 {len(walls)} / 内壁 {len(part_walls)}"
+      f" / 外周帯 {len(frame_bands) + len(frames)}\\n'")
     a(f"    '建具 {len(door_units)}（{ent_line}） / サッシ窓 {len(sashes)}"
       f" / 断熱 {len(insul) + len(insul_segs)}\\n'")
     a(f"    '窓 {len(win_registry)} / 天井梁 {len(ceil_beams)} / 天井 {len(ceilings)}室 / バルコニー {len(balconies)}\\n'")
@@ -4236,7 +4392,7 @@ def build_script(dxf_path, overrides=None):
         'walls': len(walls),
         'partition_walls': len(part_walls),
         'partition_segments': n_pseg,
-        'outline_frames': len(frames),
+        'outline_frames': len(frame_bands) + len(frames),
         'outline_dropped': len(outline_dropped),
         'heal_walls': len(heal_rects),
         'ceilings': len(ceilings),

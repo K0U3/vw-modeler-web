@@ -86,7 +86,11 @@
     <div id="winedit" style="display:none">
       <h2 style="margin-top:6px">④ 窓の調整（モデル内の「窓n」表記と対応）</h2>
       <div id="wintable"></div>
-      <div class="hint">変更すると下のスクリプトに即反映されます。ダウンロード/コピーして VW で再実行すると、前回分を消して調整後の窓で作り直されます。掃き出し窓は床から立ち上がるため腰壁高さはありません。</div>
+      <div class="hint">番号はモデル内に「窓n」の文字で表示されています。掃き出し窓は床から立ち上がるため腰壁高さはありません。</div>
+      <div class="actions" style="margin-top:10px">
+        <button id="winapply">調整を反映したスクリプトを生成（ダウンロード）</button>
+      </div>
+      <div class="hint" id="winapplied" style="display:none;color:var(--ok)">✓ 調整を反映したスクリプトを生成しました。VWで実行すると前回分を消して調整後の窓で作り直されます。</div>
     </div>
     <div class="actions" id="actions" style="display:none">
       <button class="ghost" id="copy">コピー</button>
@@ -277,6 +281,17 @@
     const pre = result.querySelector('pre');
     if (pre) pre.textContent = lastScript;
   }
+
+  // 調整を反映したスクリプトを生成してダウンロード
+  document.getElementById('winapply').addEventListener('click', () => {
+    applyWinSettings();   // 念のため最新の入力値を反映
+    const blob = new Blob([lastScript], { type: 'text/x-python' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = lastName; a.click();
+    document.getElementById('winapplied').style.display = 'block';
+    const pre = result.querySelector('pre');
+    if (pre) pre.textContent = lastScript;
+  });
 
   document.getElementById('copy').addEventListener('click', () => {
     navigator.clipboard.writeText(lastScript);
