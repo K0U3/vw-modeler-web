@@ -918,7 +918,7 @@ def _top_caps(sheet_segs, face_segs, min_gap=30, max_gap=400):
                 continue
             lo = max(s[0], t[0]) if horiz else max(s[1], t[1])
             hi = min(s[2], t[2]) if horiz else min(s[3], t[3])
-            if hi - lo < 300:
+            if hi - lo < 150:
                 continue
             if best[side] is None or gap < best[side][0]:
                 best[side] = (gap, t, lo, hi)
@@ -934,7 +934,16 @@ def _top_caps(sheet_segs, face_segs, min_gap=30, max_gap=400):
             if key not in seen:
                 seen.add(key)
                 caps.append(r)
-    return caps
+    # 直交する壁が出会うコーナーの正方形の隙間も覆うよう、
+    # 各蓋を短辺幅（=壁厚）ぶん長手方向の両端に延長する
+    out = []
+    for r in caps:
+        w = min(r[2] - r[0], r[3] - r[1])
+        if r[2] - r[0] >= r[3] - r[1]:
+            out.append([r[0] - w, r[1], r[2] + w, r[3]])
+        else:
+            out.append([r[0], r[1] - w, r[2], r[3] + w])
+    return out
 
 
 def _pt_in_poly(x, y, pts):
@@ -4160,7 +4169,8 @@ def build_script(dxf_path, overrides=None):
         a(f'# 壁上部の蓋 {len(wall_top_caps)} 枚'
           f'（2本線壁の筒を天井高さで塞ぐ。上から壁の内部が見えないように）')
         for r in wall_top_caps:
-            a(f'rect({r[0]}, {r[1]}, {r[2]}, {r[3]}, 50, CH - 50)   # 壁上蓋')
+            # 天面をCH-2に: 壁天面(CH)と同一面だとチラつく（Zファイト）ため
+            a(f'rect({r[0]}, {r[1]}, {r[2]}, {r[3]}, 50, CH - 52)   # 壁上蓋')
         a('')
 
     if outline_dropped:
