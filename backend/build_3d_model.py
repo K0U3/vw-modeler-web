@@ -887,63 +887,133 @@ def _pair_segs_to_bands(segs, min_gap, max_gap, tail=300):
     return bands, leftover
 
 
-def _top_caps(sheet_segs, face_segs, min_gap=30, max_gap=400):
-    """残った垂直シート（厚みなし壁ライン）と、最寄りの平行な面の間を
-    天井高さで蓋する薄板を返す。ペア化できなかった2本線壁（別レイヤー
-    同士・間隔広め等）でも上から壁の内部が見えないようにする。
-    max_gap=400: 壁厚の範囲。廊下等の空間（≥700）は蓋しない。
-    返り値: [x1, y1, x2, y2] のリスト（重複除去済み）"""
-    pool_h, pool_v = [], []
-    for s in face_segs + sheet_segs:
-        if s[1] == s[3] and s[2] > s[0]:
-            pool_h.append(s)
-        elif s[0] == s[2] and s[3] > s[1]:
-            pool_v.append(s)
-    caps, seen = [], set()
+def _cavity_caps(solid_polys, solid_rects, sheet_segs, bbox,
+                 grid=50, close_r=200):
+    """壁ジオメトリに挟まれた細い空洞（幅 ≤ 2*close_r）を全検出して
+    蓋にする矩形群を返す（モルフォロジカルクロージング）。
+    障害物（ソリッド+壁ライン）を close_r 膨張→収縮し、増えたセル
+    = 壁に囲まれた細い隙間。直線区間だけでなくコーナー・T字・
+    行き止まり・複数線の交差部の空洞も形状を問わず漏れなく覆う。
+    部屋・廊下（幅 > 2*close_r）は塞がない"""
+    if not (solid_polys or solid_rects or sheet_segs):
+        return []
+    r = max(1, round(close_r / grid))
+    x0 = bbox[0] - (r + 2) * grid
+    y0 = bbox[1] - (r + 2) * grid
+    W = int((bbox[2] - x0) // grid) + r + 3
+    H = int((bbox[3] - y0) // grid) + r + 3
+    if W <= 0 or H <= 0:
+        return []
+    if W * H > 2_000_000:      # 超大型図面は粗い格子に落として計算量を抑える
+        grid *= 2
+        r = max(1, round(close_r / grid))
+        W = int((bbox[2] - x0) // grid) + r + 3
+        H = int((bbox[3] - y0) // grid) + r + 3
+    M = [bytearray(W) for _ in range(H)]
+
+    def _mark_rect(rx1, ry1, rx2, ry2):
+        i1 = max(0, int((ry1 - y0) // grid))
+        i2 = min(H - 1, int((ry2 - y0) // grid))
+        j1 = max(0, int((rx1 - x0) // grid))
+        j2 = min(W - 1, int((rx2 - x0) // grid))
+        for i in range(i1, i2 + 1):
+            row = M[i]
+            for j in range(j1, j2 + 1):
+                row[j] = 1
+
+    for rc in solid_rects:
+        _mark_rect(rc[0], rc[1], rc[2], rc[3])
+    for pts in solid_polys:
+        ys = [p[1] for p in pts]
+        i1 = max(0, int((min(ys) - y0) // grid))
+        i2 = min(H - 1, int((max(ys) - y0) // grid))
+        for i in range(i1, i2 + 1):
+            yy = y0 + (i + 0.5) * grid
+            for a, b in _scan_intervals(pts, yy):
+                j1 = max(0, int((a - x0) // grid))
+                j2 = min(W - 1, int((b - x0) // grid))
+                row = M[i]
+                for j in range(j1, j2 + 1):
+                    row[j] = 1
     for s in sheet_segs:
-        horiz = s[1] == s[3] and s[2] > s[0]
-        vert = s[0] == s[2] and s[3] > s[1]
-        if not horiz and not vert:
-            continue
-        pool = pool_h if horiz else pool_v
-        # 両側それぞれの最寄り面1つとだけ蓋を作る（廊下の屋根化を防ぐ）
-        best = {1: None, -1: None}   # 方向 → (gap, 相手)
-        for t in pool:
-            if t is s:
-                continue
-            gap = (t[1] - s[1]) if horiz else (t[0] - s[0])
-            side = 1 if gap > 0 else -1
-            gap = abs(gap)
-            if not (min_gap <= gap <= max_gap):
-                continue
-            lo = max(s[0], t[0]) if horiz else max(s[1], t[1])
-            hi = min(s[2], t[2]) if horiz else min(s[3], t[3])
-            if hi - lo < 150:
-                continue
-            if best[side] is None or gap < best[side][0]:
-                best[side] = (gap, t, lo, hi)
-        for side in (1, -1):
-            if best[side] is None:
-                continue
-            _, t, lo, hi = best[side]
-            if horiz:
-                r = [lo, min(s[1], t[1]), hi, max(s[1], t[1])]
+        L = max(abs(s[2] - s[0]), abs(s[3] - s[1]))
+        n = max(1, int(L // (grid / 2.0)))
+        for k in range(n + 1):
+            t = k / n
+            j = int((s[0] + (s[2] - s[0]) * t - x0) // grid)
+            i = int((s[1] + (s[3] - s[1]) * t - y0) // grid)
+            if 0 <= i < H and 0 <= j < W:
+                M[i][j] = 1
+
+    def _prefix(mask):
+        ps = [[0] * (W + 1)]
+        for i in range(H):
+            row = mask[i]
+            prev = ps[-1]
+            cur = [0] * (W + 1)
+            run = 0
+            for j in range(W):
+                run += row[j]
+                cur[j + 1] = prev[j + 1] + run
+            ps.append(cur)
+        return ps
+
+    def _win(ps, i, j):
+        i1, i2 = max(0, i - r), min(H - 1, i + r)
+        j1, j2 = max(0, j - r), min(W - 1, j + r)
+        sm = ps[i2 + 1][j2 + 1] - ps[i1][j2 + 1] \
+            - ps[i2 + 1][j1] + ps[i1][j1]
+        return sm, (i2 - i1 + 1) * (j2 - j1 + 1)
+
+    psM = _prefix(M)
+    D = [bytearray(W) for _ in range(H)]
+    for i in range(H):
+        row = D[i]
+        for j in range(W):
+            if _win(psM, i, j)[0]:
+                row[j] = 1
+    psD = _prefix(D)
+    # 収縮後も残るセル ∧ 元は障害物でない = 囲まれた細い隙間
+    gap_runs = {}   # 行 → [(j1, j2), ...]
+    for i in range(H):
+        rowM = M[i]
+        cur = None
+        runs = []
+        for j in range(W):
+            sm, area = _win(psD, i, j)
+            hit = (sm == area) and not rowM[j]
+            if hit:
+                if cur is None:
+                    cur = [j, j]
+                else:
+                    cur[1] = j
+            elif cur is not None:
+                runs.append(tuple(cur))
+                cur = None
+        if cur is not None:
+            runs.append(tuple(cur))
+        if runs:
+            gap_runs[i] = runs
+
+    # 同一ランを縦に結合して矩形へ（周囲1セル分広げてスキマ残りを防ぐ）
+    caps = []
+    active = {}   # (j1, j2) → [i開始, i終了]
+    for i in range(H + 1):
+        cur = {}
+        for run in gap_runs.get(i, []):
+            if run in active:
+                v = active.pop(run)
+                v[1] = i
+                cur[run] = v
             else:
-                r = [min(s[0], t[0]), lo, max(s[0], t[0]), hi]
-            key = tuple(r)
-            if key not in seen:
-                seen.add(key)
-                caps.append(r)
-    # 直交する壁が出会うコーナーの正方形の隙間も覆うよう、
-    # 各蓋を短辺幅（=壁厚）ぶん長手方向の両端に延長する
-    out = []
-    for r in caps:
-        w = min(r[2] - r[0], r[3] - r[1])
-        if r[2] - r[0] >= r[3] - r[1]:
-            out.append([r[0] - w, r[1], r[2] + w, r[3]])
-        else:
-            out.append([r[0], r[1] - w, r[2], r[3] + w])
-    return out
+                cur[run] = [i, i]
+        for (j1, j2), (ia, ib) in active.items():
+            caps.append([round(x0 + (j1 - 1) * grid),
+                         round(y0 + (ia - 1) * grid),
+                         round(x0 + (j2 + 2) * grid),
+                         round(y0 + (ib + 2) * grid)])
+        active = cur
+    return caps
 
 
 def _pt_in_poly(x, y, pts):
@@ -3160,46 +3230,23 @@ def build_script(dxf_path, overrides=None):
     check = self_check(doc, xo, yo, _chk_polys, _chk_rects,
                        extra_ref_segs=_insul_chk + _ins_ref)
 
-    # ── 壁上部の蓋: 残った平行シート間（壁厚範囲30-400mm）を天井高さで塞ぐ ──
-    # ペア化できなかった2本線壁（別レイヤー同士・間隔広め）の筒を上から隠す
-    _face_pool = []
-    for _fb in frame_bands:
-        _face_pool += [[_fb[0], _fb[1], _fb[2], _fb[1]],
-                       [_fb[0], _fb[3], _fb[2], _fb[3]],
-                       [_fb[0], _fb[1], _fb[0], _fb[3]],
-                       [_fb[2], _fb[1], _fb[2], _fb[3]]]
-    for _it in insul:
-        _fb = _it['bbox']
-        _face_pool += [[_fb[0], _fb[1], _fb[2], _fb[1]],
-                       [_fb[0], _fb[3], _fb[2], _fb[3]],
-                       [_fb[0], _fb[1], _fb[0], _fb[3]],
-                       [_fb[2], _fb[1], _fb[2], _fb[3]]]
-    for _rr in wall_cut_rects:
-        _face_pool += [[_rr[0], _rr[1], _rr[2], _rr[1]],
-                       [_rr[0], _rr[3], _rr[2], _rr[3]],
-                       [_rr[0], _rr[1], _rr[0], _rr[3]],
-                       [_rr[2], _rr[1], _rr[2], _rr[3]]]
-    for _pw in part_walls:
-        _fb = _pw['rect']
-        _face_pool += [[_fb[0], _fb[1], _fb[2], _fb[1]],
-                       [_fb[0], _fb[3], _fb[2], _fb[3]],
-                       [_fb[0], _fb[1], _fb[0], _fb[3]],
-                       [_fb[2], _fb[1], _fb[2], _fb[3]]]
-    for _pp in walls:
-        _g = _pp['pts']
-        for _k in range(len(_g)):
-            _pa, _pb = _g[_k], _g[(_k + 1) % len(_g)]
-            if abs(_pa[0] - _pb[0]) <= 5:
-                _face_pool.append([round(_pa[0]), round(min(_pa[1], _pb[1])),
-                                   round(_pa[0]), round(max(_pa[1], _pb[1]))])
-            elif abs(_pa[1] - _pb[1]) <= 5:
-                _face_pool.append([round(min(_pa[0], _pb[0])), round(_pa[1]),
-                                   round(max(_pa[0], _pb[0])), round(_pa[1])])
+    # ── 壁上部の蓋: 壁に挟まれた細い空洞（幅≤400mm）を天井高さで塞ぐ ──
+    # ソリッドと壁ラインを2D格子に落とし、モルフォロジカルクロージングで
+    # コーナー・T字・行き止まりを含む全空洞を検出する
+    _solid_rects = list(frame_bands) + [_it['bbox'] for _it in insul] + \
+        list(wall_cut_rects) + [_pw['rect'] for _pw in part_walls] + \
+        [[_cb['x1'], _cb['y1'], _cb['x2'], _cb['y2']] for _cb in ceil_beams] + \
+        [_r for _, _r in wall_win_cuts] + [_r for _, _r in insul_win_cuts] + \
+        [_r for _, _r in frame_win_cuts]
+    _solid_polys = [_pp['pts'] for _pp in walls]
     _sheet_pool = [list(f_) for f_ in frames] + \
-        [list(s_) for s_ in insul_segs
-         if s_[0] == s_[2] or s_[1] == s_[3]] + \
-        [list(r_) for r_ in heal_rects]
-    wall_top_caps = _top_caps(_sheet_pool, _face_pool)
+        [list(s_) for s_ in insul_segs] + \
+        [list(r_) for r_ in heal_rects] + \
+        [list(q_) for q_ in frame_quads]
+    for _segs in sash_strips.values():
+        _sheet_pool += [list(sg_) for sg_ in _segs]
+    wall_top_caps = _cavity_caps(_solid_polys, _solid_rects, _sheet_pool,
+                                 [fx1, fy1, fx2, fy2])
     if scale_ratio and not (0.95 <= scale_ratio <= 1.05):
         check['warnings'].append(
             f'寸法記載値と実測の比が {scale_ratio:.2f}'
