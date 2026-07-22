@@ -97,6 +97,10 @@ def explain_error(e):
 # ─────────────────────────────────────────────
 CH = None          # 天井高 mm（既定値なし。ユーザー指定 or 図面注記から決定）
 FH = 150           # 床スラブ厚 mm
+FLOOR_DIR = 'x'    # フローリングの向き: 'x'=板の長手が東西 / 'y'=南北
+FLOOR_BOARD_W = 150   # フローリング板幅 mm
+FLOOR_GAP = 1         # フローリング目地 mm
+FLOOR_BOARD_T = 15    # フローリング板厚 mm
 
 # 西面：腰壁の連続窓
 SILL = 900
@@ -4208,8 +4212,26 @@ def build_script(dxf_path, overrides=None):
     a('except Exception:')
     a('    pass')
     a('')
-    a('# 床スラブ')
+    a('# 床スラブ + フローリング（板張り）')
     a(f'rect({fx1}, {fy1}, {fx2}, {fy2}, FH, -FH)')
+    a('')
+    a(f"FLOOR_DIR = '{FLOOR_DIR}'   # フローリングの向き: 'x'=板の長手が東西 / 'y'=南北")
+    a(f'FLOOR_BOARD_W = {FLOOR_BOARD_W}   # 板幅 mm')
+    a(f'FLOOR_GAP = {FLOOR_GAP}         # 目地 mm')
+    a(f'FLOOR_BOARD_T = {FLOOR_BOARD_T}    # 板厚 mm')
+    a(f'_fbx1, _fby1, _fbx2, _fby2 = {fx1}, {fy1}, {fx2}, {fy2}')
+    a("if FLOOR_DIR == 'y':")
+    a('    _fp = _fbx1')
+    a('    while _fp < _fbx2:')
+    a('        rect(_fp, _fby1, min(_fp + FLOOR_BOARD_W, _fbx2), _fby2,')
+    a('             FLOOR_BOARD_T, 0)')
+    a('        _fp += FLOOR_BOARD_W + FLOOR_GAP')
+    a('else:')
+    a('    _fp = _fby1')
+    a('    while _fp < _fby2:')
+    a('        rect(_fbx1, _fp, _fbx2, min(_fp + FLOOR_BOARD_W, _fby2),')
+    a('             FLOOR_BOARD_T, 0)')
+    a('        _fp += FLOOR_BOARD_W + FLOOR_GAP')
     a('')
 
     # 窓番号の採番（生成順に1から。番号は win() 呼び出しと窓一覧コメントに出る）
@@ -4679,6 +4701,7 @@ def build_script(dxf_path, overrides=None):
         'entrance': bool(entrance),
         'sashes': len(sashes),
         'insulation': len(insul) + len(insul_segs),
+        'floor_dir': FLOOR_DIR,
         'windows': len(win_registry),
         'window_list': [{'no': n, 'kind': k, 'bbox': [a1, b1, a2, b2], 'note': nt,
                          'type': _ws_map.get(k, ('koshi',))[0],

@@ -55,6 +55,7 @@ def index():
 async def generate(
     file: UploadFile = File(...),
     ch: Optional[int] = Form(None),   # 未指定なら図面の天井高注記(天井高/CH表記)から自動検出
+    flooring_dir: str = Form("x"),    # フローリングの向き: 'x'=東西 / 'y'=南北
     sill: int = Form(900),
     head: int = Form(2400),
     sill_fix: int = Form(150),
@@ -103,6 +104,7 @@ async def generate(
         tmp.write(data)
         tmp.close()
         overrides = {
+            "FLOOR_DIR": flooring_dir if flooring_dir in ("x", "y") else "x",
             "SILL": sill, "HEAD": head,
             "SILL_FIX": sill_fix, "HEAD_FIX": head_fix,
             "BLUE_COLOR": blue_color,

@@ -75,6 +75,14 @@
     <div class="row"><label>天井高 CH</label><input type="number" id="ch" placeholder="図面から自動検出"></div>
     <div class="hint" style="margin:-6px 0 8px">空欄なら図面の注記（"天井高2400"・"CH≒2400"等）を読み取る。検出できない場合だけ入力を求めます。<br>レイヤー等はすべて自動判定（キーワード認識）。窓は生成後に番号ごとに種別・寸法を調整できます。</div>
 
+    <div class="row"><label>フローリングの向き</label>
+      <select id="flooring_dir" style="padding:6px 8px;border:1px solid var(--border);border-radius:6px;font-size:13px">
+        <option value="x" selected>横張り（東西方向）</option>
+        <option value="y">縦張り（南北方向）</option>
+      </select>
+    </div>
+    <div class="hint" style="margin:-6px 0 8px">床は150mm幅・1mm目地のフローリング板で生成されます。</div>
+
     <button id="go" disabled>スクリプトを生成</button>
     <div class="err" id="err"></div>
   </section>
@@ -143,6 +151,7 @@
     }
     fd.append('file', upBlob, upName);
     if (ch.value) fd.append('ch', ch.value);   // 他のパラメータはすべて自動判定（サーバー側既定値）
+    fd.append('flooring_dir', document.getElementById('flooring_dir').value);
     try {
       const r = await fetch('/generate', { method: 'POST', body: fd });
       let j;
@@ -194,6 +203,7 @@
         ['窓(番号調整可)', s.windows], ['サッシ窓', s.sashes], ['断熱', s.insulation], ['天井梁', s.ceil_beams],
         ['南窓', s.south_win], ['北窓', s.north_win],
         ['東FIX窓', s.east_fix], ['西面連続窓', s.west_ribbon],
+        ['フローリング', s.floor_dir === 'y' ? '縦張り(南北)' : '横張り(東西)'],
         ['梁', s.beams], ['家具配置', s.furniture], ['簡易ボリューム家具', s.furniture_boxed], ['未マッチ家具', s.furniture_unmatched],
         ['原点', 'x' + s.origin[0] + ' y' + s.origin[1]]
       ].map(([k, v]) => `<span class="chip">${k}: ${v}</span>`).join('');
