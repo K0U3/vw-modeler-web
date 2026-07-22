@@ -888,13 +888,13 @@ def _pair_segs_to_bands(segs, min_gap, max_gap, tail=300):
 
 
 def _cavity_caps(solid_polys, solid_rects, sheet_segs, bbox,
-                 grid=50, close_r=200):
-    """壁ジオメトリに挟まれた細い空洞（幅 ≤ 2*close_r）を全検出して
-    蓋にする矩形群を返す（モルフォロジカルクロージング）。
-    障害物（ソリッド+壁ライン）を close_r 膨張→収縮し、増えたセル
-    = 壁に囲まれた細い隙間。直線区間だけでなくコーナー・T字・
-    行き止まり・複数線の交差部の空洞も形状を問わず漏れなく覆う。
-    部屋・廊下（幅 > 2*close_r）は塞がない"""
+                 grid=50, close_r=400, max_half_w=280):
+    """壁ジオメトリに挟まれた空洞を全検出して蓋にする矩形群を返す。
+    ①モルフォロジカルクロージング（close_r 膨張→収縮）で幅 ≤ 2*close_r の
+    囲まれた隙間セルを抽出し、②連結成分ごとに「障害物からの最大距離」を測り、
+    max_half_w 以下（=最大幅 約550mm 以下の細長い空洞）だけを蓋にする。
+    PS・収納・廊下などの小空間（幅600mm以上）は塞がない。
+    コーナー・T字・行き止まり・交差部も形状を問わず漏れなく覆う"""
     if not (solid_polys or solid_rects or sheet_segs):
         return []
     r = max(1, round(close_r / grid))
@@ -973,16 +973,81 @@ def _cavity_caps(solid_polys, solid_rects, sheet_segs, bbox,
             if _win(psM, i, j)[0]:
                 row[j] = 1
     psD = _prefix(D)
-    # 収縮後も残るセル ∧ 元は障害物でない = 囲まれた細い隙間
-    gap_runs = {}   # 行 → [(j1, j2), ...]
+    # 収縮後も残るセル ∧ 元は障害物でない = 囲まれた隙間セル
+    G = [bytearray(W) for _ in range(H)]
     for i in range(H):
         rowM = M[i]
+        rowG = G[i]
+        for j in range(W):
+            if not rowM[j]:
+                sm, area = _win(psD, i, j)
+                if sm == area:
+                    rowG[j] = 1
+
+    # 障害物からの距離（セル数・チェビシェフ）をBFSで計算
+    from collections import deque
+    dist = [[0] * W for _ in range(H)]
+    dq = deque()
+    for i in range(H):
+        for j in range(W):
+            if not G[i][j]:
+                continue
+            near = False
+            for di in (-1, 0, 1):
+                for dj in (-1, 0, 1):
+                    ii, jj = i + di, j + dj
+                    if 0 <= ii < H and 0 <= jj < W and M[ii][jj]:
+                        near = True
+                        break
+                if near:
+                    break
+            if near:
+                dist[i][j] = 1
+                dq.append((i, j))
+    while dq:
+        i, j = dq.popleft()
+        for di in (-1, 0, 1):
+            for dj in (-1, 0, 1):
+                ii, jj = i + di, j + dj
+                if 0 <= ii < H and 0 <= jj < W and G[ii][jj] \
+                        and dist[ii][jj] == 0:
+                    dist[ii][jj] = dist[i][j] + 1
+                    dq.append((ii, jj))
+
+    # 連結成分ごとに最大距離を判定: 細い空洞だけ採用（小空間は塞がない）
+    max_d = max(1, int(max_half_w // grid))
+    keep = [bytearray(W) for _ in range(H)]
+    seen_c = [bytearray(W) for _ in range(H)]
+    for i0 in range(H):
+        for j0 in range(W):
+            if not G[i0][j0] or seen_c[i0][j0]:
+                continue
+            comp = [(i0, j0)]
+            seen_c[i0][j0] = 1
+            k = 0
+            dmax = dist[i0][j0]
+            while k < len(comp):
+                ci, cj = comp[k]
+                k += 1
+                for di, dj in ((-1, 0), (1, 0), (0, -1), (0, 1)):
+                    ii, jj = ci + di, cj + dj
+                    if 0 <= ii < H and 0 <= jj < W and G[ii][jj] \
+                            and not seen_c[ii][jj]:
+                        seen_c[ii][jj] = 1
+                        comp.append((ii, jj))
+                        if dist[ii][jj] > dmax:
+                            dmax = dist[ii][jj]
+            if dmax <= max_d:
+                for ci, cj in comp:
+                    keep[ci][cj] = 1
+
+    gap_runs = {}   # 行 → [(j1, j2), ...]
+    for i in range(H):
+        rowK = keep[i]
         cur = None
         runs = []
         for j in range(W):
-            sm, area = _win(psD, i, j)
-            hit = (sm == area) and not rowM[j]
-            if hit:
+            if rowK[j]:
                 if cur is None:
                     cur = [j, j]
                 else:
