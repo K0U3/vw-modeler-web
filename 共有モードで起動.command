@@ -4,7 +4,7 @@
 #
 # ↓↓ ID とパスワードはここで決める（好きな文字列に変更OK） ↓↓
 ID="muji"
-PASSWORD="mujiur2026"
+PASSWORD="mujiaikawa"
 
 cd "$(dirname "$0")/backend"
 IP=$(ipconfig getifaddr en0 2>/dev/null || ipconfig getifaddr en1 2>/dev/null)
