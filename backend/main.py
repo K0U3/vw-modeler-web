@@ -11,7 +11,7 @@ import tempfile
 import os
 import secrets
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from fastapi import FastAPI, UploadFile, File, Form, Depends, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -68,6 +68,7 @@ async def generate(
     beam_w: int = Form(200),
     beam_d: int = Form(400),
     furniture_layer: str = Form("家具"),
+    furniture_mode: Literal["plan", "lineup"] = Form("plan"),
     muji_lib: str = Form("/Users/aikawawakou/Documents/MUJIHOUSE/MUJI家具 (1) v2021.vwx"),
     sash_layer: str = Form("インナーサッシ"),
     insul_layer: str = Form("断熱"),
@@ -115,6 +116,7 @@ async def generate(
             "BEAM_W": beam_w,
             "BEAM_D": beam_d,
             "FURNITURE_LAYER": furniture_layer.strip(),
+            "FURN_LINEUP": furniture_mode == "lineup",
             "MUJI_LIB": muji_lib.strip(),
             "SASH_LAYER": sash_layer.strip(),
             "INSUL_LAYER": insul_layer.strip(),

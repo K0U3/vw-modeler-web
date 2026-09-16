@@ -29,6 +29,10 @@
   .row input { width: 110px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px;
                font-size: 13px; text-align: right; }
   .row input[type=text] { width: 150px; text-align: left; }
+  .row select { max-width: 220px; padding: 6px 8px; border: 1px solid var(--border);
+                border-radius: 6px; font-size: 13px; background: #fff; }
+  .library-path { width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
+  #furniture-note { margin-bottom: 14px; }
   details { margin-top: 12px; }
   details summary { font-size: 13px; color: var(--accent-d); cursor: pointer; }
   button { width: 100%; margin-top: 16px; padding: 12px; background: var(--accent); color: #fff;
@@ -83,6 +87,22 @@
     </div>
     <div class="hint" style="margin:-6px 0 8px">床は150mm幅・1mm目地のフローリング板で生成されます。</div>
 
+    <div class="row"><label for="furniture_mode">家具の配置</label>
+      <select id="furniture_mode">
+        <option value="plan" selected>図面の位置に配置</option>
+        <option value="lineup">モデルの右横に整列</option>
+      </select>
+    </div>
+    <div class="hint">図面に描かれた家具を読み取り、室内に配置します。家具のない図面に新しくレイアウトを提案する機能ではありません。</div>
+    <details>
+      <summary>家具の詳細設定</summary>
+      <div class="row"><label for="furniture_layer">家具レイヤー名</label><input type="text" id="furniture_layer" value="家具"></div>
+      <div class="hint">「家具01」など、指定名で始まるレイヤーも読み取ります。</div>
+      <label for="muji_lib" class="hint">家具ライブラリVWX（VWを実行するMac上のパス）</label>
+      <input class="library-path" type="text" id="muji_lib" placeholder="空欄なら既定のMUJI家具ライブラリ">
+      <div class="hint">ライブラリを読み込めない家具は簡易ボックス、ベッド・ソファは簡易形状で配置します。</div>
+    </details>
+
     <button id="go" disabled>スクリプトを生成</button>
     <div class="err" id="err"></div>
   </section>
@@ -91,6 +111,7 @@
   <section class="card">
     <h2>③ 生成スクリプト</h2>
     <div id="summary"></div>
+    <div class="hint" id="furniture-note" role="status" hidden></div>
     <div id="winedit" style="display:none">
       <h2 style="margin-top:6px">④ 窓の調整（モデル内の「窓n」表記と対応）</h2>
       <div id="wintable"></div>
@@ -152,6 +173,10 @@
     fd.append('file', upBlob, upName);
     if (ch.value) fd.append('ch', ch.value);   // 他のパラメータはすべて自動判定（サーバー側既定値）
     fd.append('flooring_dir', document.getElementById('flooring_dir').value);
+    fd.append('furniture_mode', document.getElementById('furniture_mode').value);
+    fd.append('furniture_layer', document.getElementById('furniture_layer').value.trim() || '家具');
+    const libraryPath = document.getElementById('muji_lib').value.trim();
+    if (libraryPath) fd.append('muji_lib', libraryPath);
     try {
       const r = await fetch('/generate', { method: 'POST', body: fd });
       let j;
@@ -204,9 +229,19 @@
         ['南窓', s.south_win], ['北窓', s.north_win],
         ['東FIX窓', s.east_fix], ['西面連続窓', s.west_ribbon],
         ['フローリング', s.floor_dir === 'y' ? '縦張り(南北)' : '横張り(東西)'],
-        ['梁', s.beams], ['家具配置', s.furniture], ['簡易ボリューム家具', s.furniture_boxed], ['未マッチ家具', s.furniture_unmatched],
+        ['梁', s.beams], ['家具の配置先', s.furniture_mode === 'lineup' ? '右横に整列' : '図面位置'],
+        ['家具・設備 合計', s.furniture_total], ['ライブラリ照合', s.furniture],
+        ['ベッド', s.beds], ['ソファ', s.sofas], ['簡易ボリューム家具', s.furniture_boxed], ['未配置家具', s.furniture_unmatched],
         ['原点', 'x' + s.origin[0] + ' y' + s.origin[1]]
       ].map(([k, v]) => `<span class="chip">${k}: ${v}</span>`).join('');
+      const furnitureNote = document.getElementById('furniture-note');
+      furnitureNote.hidden = false;
+      furnitureNote.textContent = s.furniture_total
+        ? (s.furniture_mode === 'lineup'
+          ? '家具はモデルの右横に整列します。室内への自動配置は「図面の位置に配置」を選んで再生成してください。'
+          : '家具は図面位置に配置します。緑のガイド枠と照合し、家具の種類・向きをVWで確認してください。')
+          + ' ライブラリ照合数は取込候補の数です。取込不可の場合はVW実行時に簡易ボックスへ置き換わります。'
+        : '配置できる家具を検出できませんでした。DXFに家具が含まれているか、家具の詳細設定でレイヤー名を確認してください。';
       // セルフチェック警告と対処ヒント
       const hints = [
         ['再現率が低い', '→ 図面のレイヤー構成が特殊な可能性。DXFを相川まで送ってください'],

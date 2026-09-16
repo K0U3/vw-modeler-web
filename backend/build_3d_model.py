@@ -158,7 +158,7 @@ BEAM_W = 200       # 梁幅 mm（計画方向の断面寸法）
 BEAM_D = 400       # 梁せい mm（天井から下がる垂直高さ）
 
 # 家具
-FURN_LINEUP = True         # True: 家具は図面位置に置かず、モデルの右横に整列して並べる
+FURN_LINEUP = False        # 標準は図面位置。True の場合だけモデルの右横に整列する
 FURN_LINEUP_GAP = 600      # 整列時の間隔 mm
 FURN_LINEUP_ROW_W = 12000  # 整列1行の幅 mm
 FURNITURE_LAYER = '家具'   # 前方一致（'家具01' 等も対象）
@@ -2549,6 +2549,7 @@ def build_script(dxf_path, overrides=None):
     """DXF から VW Python スクリプト文字列を生成し (script, summary) を返す。
     overrides で CH/SILL/HEAD/WALL_LAYERS 等を上書きできる（Web UI 用）。"""
     globals()['CH'] = None   # Web常駐プロセスで前リクエストの検出値を持ち越さない
+    globals()['FURN_LINEUP'] = False  # 前回の整列指定を次の図面へ持ち越さない
     if overrides:
         g = globals()
         for k, v in overrides.items():
@@ -3567,7 +3568,7 @@ def build_script(dxf_path, overrides=None):
     for sf_ in sofas_simple:
         furn_guides.append(list(sf_['bbox']))
 
-    # ── 家具をモデルの右横に整列（図面位置には置かない） ──
+    # ── 整列を選んだ場合のみ右横へ移動。標準は図面から取得した配置を維持 ──
     if FURN_LINEUP:
         _lx0 = fx2 + 3000
         _ly = fy1
@@ -4717,6 +4718,8 @@ def build_script(dxf_path, overrides=None):
         'west_ribbon': len(west),
         'beams': len(beams),
         'furniture': len(placed),
+        'furniture_mode': 'lineup' if FURN_LINEUP else 'plan',
+        'furniture_total': len(placed) + len(boxed) + len(beds_simple) + len(sofas_simple),
         'furniture_boxed': len(boxed),
         'furniture_unmatched': len(unmatched),
         'beds': len(beds_simple),
