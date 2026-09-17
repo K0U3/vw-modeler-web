@@ -33,6 +33,17 @@
                 border-radius: 6px; font-size: 13px; background: #fff; }
   .library-path { width: 100%; padding: 8px; border: 1px solid var(--border); border-radius: 6px; }
   #furniture-note { margin-bottom: 14px; }
+  main > section { min-width: 0; }
+  .furniture-scroll { overflow-x: auto; max-height: 480px; }
+  .ftable { min-width: 850px; }
+  .ftable td { vertical-align: top; }
+  .ftable select { max-width: 250px; width: 250px; }
+  .ftable .source-name { max-width: 180px; overflow-wrap: anywhere; }
+  .ftable small { display: block; color: var(--sub); }
+  .furniture-review { color: #975d0b; }
+  #furniture-error { white-space: pre-line; }
+  @media (max-width: 780px) { main { grid-template-columns: 1fr; padding: 16px; } }
+
   details { margin-top: 12px; }
   details summary { font-size: 13px; color: var(--accent-d); cursor: pointer; }
   button { width: 100%; margin-top: 16px; padding: 12px; background: var(--accent); color: #fff;
@@ -100,7 +111,7 @@
       <div class="hint">「家具01」など、指定名で始まるレイヤーも読み取ります。</div>
       <label for="muji_lib" class="hint">家具ライブラリVWX（VWを実行するMac上のパス）</label>
       <input class="library-path" type="text" id="muji_lib" placeholder="空欄なら既定のMUJI家具ライブラリ">
-      <div class="hint">ライブラリを読み込めない家具は簡易ボックス、ベッド・ソファは簡易形状で配置します。</div>
+      <div class="hint">ライブラリを読み込めない家具は簡易ボックス、ベッド・ソファもライブラリ部品を優先します。候補が曖昧な家具は簡易ボックスとし、生成後の一覧で部品を選べます。</div>
     </details>
 
     <button id="go" disabled>スクリプトを生成</button>
@@ -112,6 +123,17 @@
     <h2>③ 生成スクリプト</h2>
     <div id="summary"></div>
     <div class="hint" id="furniture-note" role="status" hidden></div>
+    <details id="furniture-edit" hidden>
+      <summary>家具の照合・調整（モデルの「家具n」と対応）</summary>
+      <p class="hint">図面の寸法は平面上の外接寸法、部品の寸法はライブラリの局所寸法です。回転や取手などで差が出る場合があります。向きは0〜360度、移動は図面のX・Y方向（mm）で指定します。</p>
+      <div class="furniture-scroll"><table class="wtab ftable">
+        <thead><tr><th>番号・元の家具</th><th>図面の外形・位置</th><th>MUJI部品／処理</th><th>角度°</th><th>移動X mm</th><th>移動Y mm</th></tr></thead>
+        <tbody id="furniture-rows"></tbody>
+      </table></div>
+      <p class="err" id="furniture-error" role="alert"></p>
+      <div class="actions"><button class="ghost" id="furniture-reset">家具の調整をリセット</button></div>
+      <p class="hint">変更は下のスクリプトとダウンロードに反映されます。部品変更後は寸法と前後方向を確認してください。要確認は自動検証の結果で、手動選択後もVWでの確認が必要です。</p>
+    </details>
     <div id="winedit" style="display:none">
       <h2 style="margin-top:6px">④ 窓の調整（モデル内の「窓n」表記と対応）</h2>
       <div id="wintable"></div>
@@ -230,7 +252,7 @@
         ['東FIX窓', s.east_fix], ['西面連続窓', s.west_ribbon],
         ['フローリング', s.floor_dir === 'y' ? '縦張り(南北)' : '横張り(東西)'],
         ['梁', s.beams], ['家具の配置先', s.furniture_mode === 'lineup' ? '右横に整列' : '図面位置'],
-        ['家具・設備 合計', s.furniture_total], ['ライブラリ照合', s.furniture],
+        ['家具・設備 合計', s.furniture_total], ['ライブラリ照合', s.furniture], ['家具 要確認', s.furniture_review],
         ['ベッド', s.beds], ['ソファ', s.sofas], ['簡易ボリューム家具', s.furniture_boxed], ['未配置家具', s.furniture_unmatched],
         ['原点', 'x' + s.origin[0] + ' y' + s.origin[1]]
       ].map(([k, v]) => `<span class="chip">${k}: ${v}</span>`).join('');
@@ -239,7 +261,7 @@
       furnitureNote.textContent = s.furniture_total
         ? (s.furniture_mode === 'lineup'
           ? '家具はモデルの右横に整列します。室内への自動配置は「図面の位置に配置」を選んで再生成してください。'
-          : '家具は図面位置に配置します。緑のガイド枠と照合し、家具の種類・向きをVWで確認してください。')
+          : '家具は図面位置に配置します。緑のガイド枠と照合し、生成後の家具照合一覧で部品・向き・位置を確認してください。')
           + ' ライブラリ照合数は取込候補の数です。取込不可の場合はVW実行時に簡易ボックスへ置き換わります。'
         : '配置できる家具を検出できませんでした。DXFに家具が含まれているか、家具の詳細設定でレイヤー名を確認してください。';
       // セルフチェック警告と対処ヒント
@@ -266,6 +288,7 @@
         sill: w.type === 'haki' ? 0 : (w.sill || 0),
       }));
       renderWinEdit();
+      renderFurnitureEdit(s);
     } catch (e) {
       err.textContent = '⚠ 通信エラー: ' + e.message
         + '\n原因: ネットワークが切れたか、サーバーに接続できていません'
@@ -340,6 +363,7 @@
 
   // 「調整済みスクリプトを生成」: 反映した上でダウンロード
   document.getElementById('wingen').addEventListener('click', () => {
+    if (!applyFurnitureSettings()) return;
     applyWinSettings();
     const blob = new Blob([lastScript], { type: 'text/x-python' });
     const a = document.createElement('a');
@@ -352,15 +376,113 @@
   });
 
   document.getElementById('copy').addEventListener('click', () => {
+    if (!applyFurnitureSettings()) return;
+    applyWinSettings();
     navigator.clipboard.writeText(lastScript);
     const b = document.getElementById('copy'); b.textContent = 'コピーした';
     setTimeout(() => b.textContent = 'コピー', 1200);
   });
   document.getElementById('dl').addEventListener('click', () => {
+    if (!applyFurnitureSettings()) return;
+    applyWinSettings();
     const blob = new Blob([lastScript], { type: 'text/x-python' });
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = lastName; a.click();
   });
+
+  // 家具の元データと候補を照合し、VWの番号付き設定に反映する。
+  let furnitureData = [], furnitureCatalog = [], furnitureRows = [];
+  const fpanel = document.getElementById('furniture-edit');
+  const fbody = document.getElementById('furniture-rows');
+  const ferr = document.getElementById('furniture-error');
+  function renderFurnitureEdit(s) {
+    furnitureData = s.furniture_list || [];
+    furnitureCatalog = s.furniture_catalog || [];
+    fpanel.hidden = !furnitureData.length;
+    fpanel.open = !!s.furniture_review;
+    fbody.replaceChildren(); furnitureRows = []; ferr.textContent = '';
+    for (const f of furnitureData) {
+      const tr = document.createElement('tr');
+      const cell = () => { const td = document.createElement('td'); tr.appendChild(td); return td; };
+      const src = cell(); src.className = 'source-name';
+      src.textContent = '家具' + f.no + '：' + f.source;
+      const review = document.createElement('small'); review.textContent = f.review;
+      if (f.review !== '名前一致') review.className = 'furniture-review';
+      src.appendChild(review);
+      const dims = cell(); dims.textContent = (f.source_w ?? '?') + ' × ' + (f.source_d ?? '?') + ' mm';
+      const pos = document.createElement('small');
+      pos.textContent = 'X ' + f.source_x + ' / Y ' + f.source_y + ' / 元角度 ' + f.source_angle + '°';
+      dims.appendChild(pos);
+      const target = cell(); const select = document.createElement('select');
+      select.setAttribute('aria-label', '家具' + f.no + 'の部品');
+      select.add(new Option('生成時：' + (f.matched || '簡易ボックス'), 'original'));
+      select.add(new Option('簡易ボックス（現在の寸法）', 'box'));
+      select.add(new Option('配置しない', 'skip'));
+      const groups = new Map();
+      furnitureCatalog.forEach((part, i) => {
+        if (!groups.has(part.category)) {
+          const group = document.createElement('optgroup'); group.label = part.category;
+          groups.set(part.category, group); select.appendChild(group);
+        }
+        groups.get(part.category).appendChild(new Option(part.label + ' [' + part.w + '×' + part.d + '×H' + part.h + ']', String(i)));
+      });
+      target.appendChild(select);
+      const number = (value, label) => {
+        const input = document.createElement('input'); input.type = 'number'; input.step = 'any'; input.value = String(value);
+        input.setAttribute('aria-label', '家具' + f.no + 'の' + label); cell().appendChild(input); return input;
+      };
+      const angle = number(f.angle, '角度'), dx = number(0, '移動X'), dy = number(0, '移動Y');
+      const row = { f, select, angle, dx, dy }; furnitureRows.push(row);
+      for (const input of [select, angle, dx, dy]) input.addEventListener('change', applyFurnitureSettings);
+      fbody.appendChild(tr);
+    }
+  }
+  function furnitureOverrides() {
+    const overrides = {};
+    for (const row of furnitureRows) {
+      const { f, select, angle, dx, dy } = row;
+      const values = [angle, dx, dy].map(el => el.value.trim() === '' ? NaN : Number(el.value));
+      if (!values.every(Number.isFinite) || Math.abs(values[0]) > 360 || values.slice(1).some(v => Math.abs(v) > 100000)) {
+        throw new Error('家具' + f.no + '：角度は−360〜360度、移動は−100000〜100000mmの数値を入力してください。');
+      }
+      const ov = { angle: values[0], dx: values[1], dy: values[2] };
+      if (select.value === 'skip') ov.skip = true;
+      else if (select.value === 'box') ov.box = true;
+      else if (select.value !== 'original') {
+        const part = furnitureCatalog[Number(select.value)];
+        if (!part) throw new Error('家具' + f.no + '：部品を選び直してください。');
+        ov.part = part;
+      }
+      if (select.value !== 'original' || values[0] !== f.angle || values[1] || values[2]) overrides[f.no] = ov;
+    }
+    return overrides;
+  }
+  function applyFurnitureSettings() {
+    ferr.textContent = '';
+    try {
+      const settings = furnitureOverrides();
+      const re = /([ \t]*)# >>> FURN_OVERRIDES[\s\S]*?# <<< FURN_OVERRIDES/;
+      const match = lastScript.match(re);
+      if (!match) {
+        if (furnitureRows.length) throw new Error('家具設定が見つかりません。スクリプトを再生成してください。');
+        return true;
+      }
+      // JSONを文字列として埋め込み、Pythonのbool/nullと文字列エスケープを正しく扱う。
+      const payload = JSON.stringify(JSON.stringify(settings));
+      const i = match[1];
+      const block = i + '# >>> FURN_OVERRIDES\n' + i + 'import json as _fjson\n'
+        + i + 'FURN_OVERRIDES = {int(k): v for k, v in _fjson.loads(' + payload + ').items()}\n'
+        + i + '# <<< FURN_OVERRIDES';
+      lastScript = lastScript.replace(re, () => block);
+      const pre = result.querySelector('pre'); if (pre) pre.textContent = lastScript;
+      return true;
+    } catch (error) { ferr.textContent = error.message; return false; }
+  }
+  document.getElementById('furniture-reset').addEventListener('click', () => {
+    renderFurnitureEdit({ furniture_list: furnitureData, furniture_catalog: furnitureCatalog, furniture_review: 1 });
+    applyFurnitureSettings();
+  });
+
 </script>
 </body>
 </html>

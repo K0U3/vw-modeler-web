@@ -92,7 +92,7 @@ class FurniturePlacementTests(unittest.TestCase):
     def test_default_places_all_types_in_drawing(self):
         script,s = self.generate()
         self.assertEqual(s['furniture_mode'],'plan')
-        self.assertEqual((s['furniture'],s['beds'],s['sofas'],s['furniture_boxed']),(1,1,1,1))
+        self.assertEqual((s['furniture'],s['beds'],s['sofas'],s['furniture_boxed']),(3,1,1,1))
         self.assertEqual(s['furniture_total'],4)
         ox,oy = s['origin']
         furniture = calls(script,'place_furniture')
@@ -101,20 +101,19 @@ class FurniturePlacementTests(unittest.TestCase):
                          (13000-ox,23000-oy,90))
         box = next(c for c in furniture if ast.literal_eval(c.args[1]) is None)
         self.assertEqual(tuple(ast.literal_eval(a) for a in box.args[2:4]),(12055-ox,25700-oy))
-        for category,marker in [('ベッド','ベッド本体'),('ソファ','座面')]:
-            line=next(line.strip() for line in script.splitlines() if marker in line and line.strip().startswith('rect('))
-            c=ast.parse(line).body[0].value
-            x1,y1,x2,y2=[ast.literal_eval(a) for a in c.args[:4]]
-            self.assertEqual(((x1+x2)/2+ox,(y1+y2)/2+oy),self.expected[category])
+        for category in ['ベッド','ソファ']:
+            item = next(it for it in engine.load_catalog() if it['category'] == category)
+            c = next(c for c in furniture if ast.literal_eval(c.args[1]) == (item.get('vw_name') or item['block']))
+            x,y = [ast.literal_eval(a) for a in c.args[2:4]]
+            self.assertEqual((x+ox,y+oy), self.expected[category])
+        self.assertEqual([r['no'] for r in s['furniture_list']], [1,2,3,4])
+        self.assertEqual(len(s['furniture_catalog']), len(engine.load_catalog()))
 
     def test_lineup_moves_every_type_and_next_call_resets(self):
         script,s=self.generate(FURN_LINEUP=True)
         self.assertEqual(s['furniture_mode'],'lineup')
         for c in calls(script,'place_furniture'):
             self.assertGreater(ast.literal_eval(c.args[2]),s['bbox'][2])
-        for marker in ['ベッド本体','座面']:
-            line=next(line.strip() for line in script.splitlines() if marker in line and line.strip().startswith('rect('))
-            self.assertGreater(ast.literal_eval(ast.parse(line).body[0].value.args[0]),s['bbox'][2])
         self.test_default_places_all_types_in_drawing()
 
     def test_no_furniture(self):

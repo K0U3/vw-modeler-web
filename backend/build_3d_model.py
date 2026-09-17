@@ -2427,7 +2427,15 @@ def extract_furniture(doc, xo, yo):
                     continue
                 if min(w, d) > 2300 or max(w, d) > 3200:
                     continue   # 家具サイズを超える（設備のコンテナブロック等）
+            local = e.copy()
+            local.dxf.rotation = 0
+            lbb = _insert_world_bbox(local)
+            lw = round(lbb[2] - lbb[0]) if lbb else w
+            ld = round(lbb[3] - lbb[1]) if lbb else d
+            mirrored = (getattr(e.dxf, 'xscale', 1) * getattr(e.dxf, 'yscale', 1) < 0
+                        or getattr(e.dxf, 'extrusion', (0, 0, 1))[2] < 0)
             items.append({
+                'local_w': lw, 'local_d': ld, 'mirrored': mirrored,
                 'kind': 'insert',
                 'name': e.dxf.name,
                 'x': round(x),
@@ -2470,37 +2478,86 @@ def load_catalog():
 
 
 def _norm(s):
-    """マッチ用に正規化（コード・区切り除去、小文字化）"""
-    s = re.sub(r'\d{4,}', '', s)
-    s = re.sub(r'[_\-\s\.]', '', s)
-    return s.lower()
+    """寸法・品番・左右違いを消さずに表記だけ正規化する。"""
+    import unicodedata
+    s = unicodedata.normalize('NFKC', s or '').lower()
+    return re.sub(r'[_\-\s.]', '', s)
+
+
+def furniture_family(name):
+    """明示された種類だけを判別。外形寸法から種類を断定しない。"""
+    n = _norm(name)
+    if '冷蔵' in n or 'refrigerator' in n:
+        return '冷蔵庫'
+    if '箱型' in n:
+        return '箱型キッチン'
+    if 'キッチン' in n or 'kitchen' in n:
+        return '組合せキッチン' if ('組合' in n or '組み合' in n) else 'キッチン'
+    if 'ソファ' in n or 'sofa' in n:
+        return 'ソファ'
+    if 'ベッド' in n or 'bed' in n:
+        return 'ベッド'
+    if 'ワーキングチェア' in n or 'ワークチェア' in n:
+        return 'ワークチェア'
+    if 'ダイニング' in n and ('チェア' in n or '椅子' in n):
+        return 'ダイニングチェア'
+    if 'チェア' in n or '椅子' in n or 'chair' in n:
+        return 'チェア'
+    if 'デスク' in n or 'desk' in n:
+        return 'デスク'
+    if 'テーブル' in n or 'table' in n:
+        return 'テーブル'
+    if 'ラグ' in n or 'カーペット' in n:
+        return 'ラグ'
+    return None
+
+
+def _family_catalog(name, catalog):
+    family = furniture_family(name)
+    if not family:
+        return catalog
+    if family == 'キッチン':
+        return [it for it in catalog if it['category'] == 'キッチン']
+    if family == 'チェア':
+        return [it for it in catalog if it['category'] == 'チェア']
+    return [it for it in catalog if furniture_family(it['name']) == family]
 
 
 def match_by_name(name, catalog):
-    """ブロック名 → カタログ最良一致（部分一致＋2-gram 重なり）"""
+    """完全一致を優先。同点・型式違いは自動確定しない。"""
+    # VWシンボル名の末尾スペースも識別子の一部。
+    for field in ('vw_name', 'block', 'name'):
+        exact = [it for it in catalog if it.get(field) == name]
+        if len(exact) == 1:
+            return exact[0], 100
     q = _norm(name)
     if not q:
         return None, 0
-    best, best_score = None, 0
-    qg = set(q[i:i + 2] for i in range(len(q) - 1)) or {q}
-    for it in catalog:
+    exact = [it for it in catalog if q in {_norm(it.get(k)) for k in ('name', 'block', 'vw_name')}]
+    if len(exact) == 1:
+        return exact[0], 100
+    if len(exact) > 1:
+        return None, 0
+    if not furniture_family(name):
+        return None, 0
+    numbers = set(re.findall(r'\d+', q))
+    ranked = []
+    qg = {q[i:i + 2] for i in range(len(q) - 1)}
+    for it in _family_catalog(name, catalog):
         cn = _norm(it['name'])
-        if not cn:
+        # 数値指定のある家具を別サイズ・別品番へ曖昧一致させない。
+        if numbers != set(re.findall(r'\d+', cn)):
             continue
-        if cn == q or cn in q or q in cn:
-            score = 100
-        else:
-            cg = set(cn[i:i + 2] for i in range(len(cn) - 1)) or {cn}
-            score = len(qg & cg) * 100 // max(len(qg), len(cg))
-        if score > best_score:
-            best, best_score = it, score
-    return (best, best_score) if best_score >= 40 else (None, best_score)
+        cg = {cn[i:i + 2] for i in range(len(cn) - 1)}
+        score = len(qg & cg) * 100 // max(len(qg), len(cg), 1)
+        ranked.append((score, it))
+    ranked.sort(key=lambda x: -x[0])
+    if ranked and ranked[0][0] >= 80 and (len(ranked) == 1 or ranked[0][0] - ranked[1][0] >= 10):
+        return ranked[0][1], ranked[0][0]
+    return None, 0
 
 
 def _match_dims(it):
-    """寸法照合に使う実効寸法。
-    シェルフは命名規則寸法が正、それ以外はACIS実測（3Dソリッドbbox）を優先。
-    2D図形由来の w/d はキッチン等で注記込みの過大値になるため最後の手段"""
     if it.get('dim_source') == 'shelf':
         return it['w'], it['d']
     if it.get('h_source') == 'acis' and it.get('w_geo') and it.get('d_geo'):
@@ -2509,33 +2566,53 @@ def _match_dims(it):
 
 
 def match_by_size(w, d, catalog, prior_cats=None):
-    """寸法 → カタログ最良一致（向き両対応・許容誤差 各辺平均±15%）。
-    prior_cats があればまずそのカテゴリ内で照合し、無ければ全体から。
-    合わない家具は無理にマッチさせず呼び出し側で簡易ボリュームにする。
-    返り値: (hit, err, swapped)  swapped=True は縦横を入れ替えて一致
-    （配置時にシンボルを+90度回転して図面の向きに合わせる）"""
-    def _best_in(items):
-        best, best_err, best_sw = None, 1e18, False
-        for it in items:
-            mw, md = _match_dims(it)
-            if it.get('dim_source') == 'unknown' or not mw or not md:
-                continue
-            e1 = abs(mw - w) + abs(md - d)
-            e2 = abs(mw - d) + abs(md - w)
-            err = min(e1, e2)
-            if err < best_err:
-                best, best_err, best_sw = it, err, e2 < e1
-        return best, best_err, best_sw
-
+    """各辺15%以内の候補のみ。僅差の別部品は要確認にする。"""
+    if not w or not d:
+        return None, 0, False
+    ranked = []
+    for it in catalog:
+        mw, md = _match_dims(it)
+        if it.get('dim_source') == 'unknown' or not mw or not md:
+            continue
+        options = []
+        for sw, cw, cd in ((False, mw, md), (True, md, mw)):
+            ew, ed = abs(cw - w) / w, abs(cd - d) / d
+            if max(ew, ed) <= .15:
+                options.append((ew + ed, abs(cw - w) + abs(cd - d), sw))
+        if options:
+            rel, err, sw = min(options)
+            ranked.append((rel, err, sw, it))
     if prior_cats:
-        best, err, sw = _best_in([it for it in catalog
-                                  if it['category'] in prior_cats])
-        if best and err <= (w + d) * 0.3:
-            return best, err, sw
-    best, err, sw = _best_in(catalog)
-    if best and err <= (w + d) * 0.3:
-        return best, err, sw
-    return None, err, False
+        preferred = [r for r in ranked if r[3]['category'] in prior_cats]
+        if preferred:
+            ranked = preferred
+    ranked.sort(key=lambda x: x[0])
+    if not ranked:
+        return None, 0, False
+    # 同程度の寸法の冷蔵庫大/中、チェアの種類、ソファの構成などを勝手に決めない。
+    if len(ranked) > 1 and ranked[1][0] - ranked[0][0] < .03:
+        return None, ranked[0][1], False
+    _, err, sw, hit = ranked[0]
+    return hit, err, sw
+
+
+def furniture_match(f, catalog, prior=None):
+    name = f.get('name') or ''
+    hit, score = match_by_name(name, catalog)
+    if f.get('mirrored'):
+        return None, '左右反転は要確認', 0, 0
+    if hit:
+        return hit, '名前一致' if score == 100 else '名前候補・向き要確認', 0, f.get('angle', 0)
+    # 寸法が名前に書かれているが一致しなかったものを寸法推測で別品番へ変えない。
+    if furniture_family(name) and re.search(r'\d{2,}', _norm(name)):
+        return None, '型式・寸法指定は要確認', 0, 0
+    lw, ld = f.get('local_w') or f.get('w'), f.get('local_d') or f.get('d')
+    hit, err, sw = match_by_size(lw, ld, _family_catalog(name, catalog), prior)
+    if hit:
+        # INSERTの局所寸法で照合するため、180/270度や斜めの回転も保持できる。
+        angle = ((f.get('angle', 0) if f.get('local_w') else 0) + (90 if sw else 0)) % 360
+        return hit, '寸法候補・種類と向き要確認', err, angle
+    return None, '一致部品なし・要確認', err, 0
 
 
 def flat(pts):
@@ -3022,72 +3099,15 @@ def build_script(dxf_path, overrides=None):
 
     placed, boxed, unmatched, beds_simple, sofas_simple = [], [], [], [], []
     for f in furniture:
-        hit, err, via, sw = None, 0, None, False
         prior = _prior_cats(f)
-        if f['kind'] == 'insert' and f['name']:
-            hit, _ = match_by_name(f['name'], catalog)
-            via = '名前'
-            if not hit and f['w']:        # 名前で外れたら寸法で（無名グループ対応）
-                hit, err, sw = match_by_size(f['w'], f['d'], catalog, prior)
-                via = '寸法'
-        elif f['kind'] == 'foot':
-            hit, err, sw = match_by_size(f['w'], f['d'], catalog, prior)
-            via = '寸法'
-        # 部屋に合わない水回り設備は割り当てない（寝室の椅子がトイレになる等の誤爆防止）
-        if hit and via == '寸法' and prior and hit['category'] not in prior \
+        hit, via, err, ang = furniture_match(f, catalog, prior)
+        if hit and via.startswith('寸法') and prior and hit['category'] not in prior \
                 and _single_kind(hit['category'], hit['name']):
-            hit = None
-        # ベッドはシンボルを使わず「簡易ボリューム+枕」で表現する
-        is_bed = (hit is not None and hit['category'] == 'ベッド') or \
-                 (hit is None and f.get('w') and f.get('d')
-                  and _is_bed_size(f['w'], f['d']))
-        if is_bed:
-            # f['w'],f['d'] はワールド寸法（回転込み）なのでスワップ不要。
-            # カタログ寸法フォールバック時のみ図面INSERT回転で入替える
-            bw = f.get('w')
-            bd = f.get('d')
-            if not (bw and bd):
-                bw = _match_dims(hit)[0] if hit else 1000
-                bd = _match_dims(hit)[1] if hit else 2000
-                if abs(((f['angle'] % 180) + 180) % 180 - 90) <= 10:
-                    bw, bd = bd, bw
-            beds_simple.append({
-                'bbox': [round(f['x'] - bw / 2), round(f['y'] - bd / 2),
-                         round(f['x'] + bw / 2), round(f['y'] + bd / 2)],
-                'label': hit['name'] if hit else 'ベッド(寸法判定)',
-            })
-            continue
-        # ソファもシンボルを使わず「座面+背もたれ+脚」の簡易ボリュームで表現する
-        if hit is not None and hit['category'] == 'ソファ':
-            sw_ = f.get('w')
-            sd_ = f.get('d')
-            if not (sw_ and sd_):   # ワールド寸法が無い時だけカタログ寸法+回転入替
-                sw_ = _match_dims(hit)[0]
-                sd_ = _match_dims(hit)[1]
-                if abs(((f['angle'] % 180) + 180) % 180 - 90) <= 10:
-                    sw_, sd_ = sd_, sw_
-            sofas_simple.append({
-                'bbox': [round(f['x'] - sw_ / 2), round(f['y'] - sd_ / 2),
-                         round(f['x'] + sw_ / 2), round(f['y'] + sd_ / 2)],
-                'label': hit['name'][:30],
-            })
-            continue
-        # 寸法乖離ガード: マッチ品の実寸が図面寸と25%超ずれるなら
-        # シンボルを無理に置かず図面寸の簡易ボリュームにする（はみ出しズレ防止）
-        if hit and via == '寸法' and f.get('w') and f.get('d'):
-            mw_, md_ = _match_dims(hit)
-            fw_, fd_ = (f['w'], f['d']) if not sw else (f['d'], f['w'])
-            if mw_ and md_ and (abs(mw_ - fw_) > fw_ * 0.25
-                                or abs(md_ - fd_) > fd_ * 0.25):
-                hit = None
+            hit, via = None, '部屋用途と設備候補が不一致・要確認'
+        f['review'] = via
+        # ベッド・ソファも他の家具と同様にライブラリの実部品を使う。
+        # 未確定の場合は元図面外形のボックスを表示し、画面で部品を指定できる。
         if hit:
-            # 配置回転: 寸法照合は「ワールド寸法 vs カタログ局所寸法」の比較なので、
-            # 必要な回転は sw の有無だけで決まる（図面INSERT回転はワールド寸法に織込み済み）。
-            # 名前照合（同一シンボル）は図面INSERTの回転に追従する
-            if via == '寸法':
-                ang = 90.0 if sw else 0.0
-            else:
-                ang = round((f['angle'] + (90 if sw else 0)) % 360, 1)
             placed.append({**f, 'angle': ang,
                            'block': hit['block'], 'matched': hit['name'],
                            'cat': hit['category'], 'via': via, 'err': err,
@@ -3118,63 +3138,7 @@ def build_script(dxf_path, overrides=None):
     beds_simple = _dedupe_boxes(beds_simple)
     sofas_simple = _dedupe_boxes(sofas_simple)
 
-    # 1住戸に1つしか無い設備（トイレ・キッチン・洗面台）: 最良1件のみ配置し、残りは簡易ボリュームへ
-    room_label_pts = {k: [] for k in SINGLE_ROOM_KW}
-    for txt, tx, ty in _iter_texts_pos(doc):
-        u = txt.upper()
-        for k, kws in SINGLE_ROOM_KW.items():
-            if any(kw in u for kw in kws):
-                room_label_pts[k].append((tx - xo, ty - yo))
-
-    single_groups = {}
-    for p in placed:
-        g = _single_kind(p['cat'], p['matched'])
-        if g:
-            single_groups.setdefault(g, []).append(p)
-    demote = []
-    for g, items in single_groups.items():
-        if len(items) <= 1:
-            continue
-        pts = room_label_pts.get(g) or []
-
-        def _rank(p):
-            if pts:
-                return min((p['x'] - rx) ** 2 + (p['y'] - ry) ** 2 for rx, ry in pts)
-            return p['err']
-        items.sort(key=_rank)
-        demote += items[1:]   # 該当部屋のラベルに最も近い1件だけ残す
-    if demote:
-        _demote_ids = set(map(id, demote))
-        placed = [p for p in placed if id(p) not in _demote_ids]
-        for p in demote:
-            if p.get('w') and p.get('d'):
-                boxed.append(p)
-            else:
-                unmatched.append(p)
-
-    # トイレは図面の「トイレ」ラベル位置に設置する（共通で必ず1つ）
-    toilet_pts = room_label_pts.get('トイレ') or []
-    if toilet_pts:
-        lx, ly = toilet_pts[0]
-        cur = next((p for p in placed
-                    if _single_kind(p['cat'], p['matched']) == 'トイレ'), None)
-        if cur is None:
-            # 図面からトイレが照合できなくても、カタログのトイレをラベル位置に置く
-            t_item = next((it for it in catalog if 'トイレ' in it['name']), None)
-            if t_item:
-                placed.append({'kind': 'label', 'name': None,
-                               'x': round(lx), 'y': round(ly), 'angle': 0,
-                               'w': None, 'd': None,
-                               'block': t_item['block'], 'matched': t_item['name'],
-                               'cat': t_item['category'], 'via': 'ラベル位置', 'err': 0,
-                               'vw': t_item.get('vw_name') or t_item['block'],
-                               'h': t_item.get('h') or 1000,
-                               'z0': t_item.get('z0') or 0,
-                               'bw': t_item.get('w_geo') or t_item.get('w') or 700,
-                               'bd': t_item.get('d_geo') or t_item.get('d') or 800})
-        elif ((cur['x'] - lx) ** 2 + (cur['y'] - ly) ** 2) ** 0.5 > 600:
-            cur['x'], cur['y'] = round(lx), round(ly)   # ラベル位置に寄せる
-            cur['via'] = 'ラベル位置'
+    # 台数と位置は図面を優先。部屋名だけから設備を追加・移動・間引きしない。
 
     # 建具がある位置には壁を立ち上げない: ユニットbboxに6割以上収まる壁ポリを除去
     _unit_bbs = [u['bbox'] for u in door_units] + [s['bbox'] for s in sashes]
@@ -3497,6 +3461,12 @@ def build_script(dxf_path, overrides=None):
                 _ex2, _ey2 = max(_ex2, px), max(_ey2, py)
     has_exp_bbox = _ex1 != float('inf')
 
+    for it in placed + boxed:
+        it['source_x'], it['source_y'] = it['x'], it['y']
+        it['source_angle'] = next((f.get('angle', 0) for f in furniture
+                                   if f.get('name') == it.get('name')
+                                   and f['x'] == it['x'] and f['y'] == it['y']), 0)
+
     # ── 家具のセルフチェックと自動補正 ──
     furn_wall_bbs = [pp['bbox'] for pp in polys] + frames
     furn_snapped, furn_max_shift, furn_dedup = 0, 0, 0
@@ -3524,8 +3494,7 @@ def build_script(dxf_path, overrides=None):
                  (0, hitw[1] - r[3]), (0, hitw[3] - r[1])]
         dx, dy = min(moves, key=lambda m: abs(m[0]) + abs(m[1]))
         if abs(dx) + abs(dy) <= 200:
-            it['x'] = round(it['x'] + dx)
-            it['y'] = round(it['y'] + dy)
+            it['review'] += '／壁との干渉要確認'
             furn_snapped += 1
             furn_max_shift = max(furn_max_shift, abs(dx) + abs(dy))
 
@@ -3553,9 +3522,18 @@ def build_script(dxf_path, overrides=None):
                           'dedup': furn_dedup, 'dim_warn': furn_dim_warn}
     if furn_snapped:
         check['warnings'].append(
-            f'家具{furn_snapped}件を壁から退避（最大{furn_max_shift}mm）')
+            f'家具{furn_snapped}件が壁と干渉する可能性（図面位置を保持・手動確認）')
     if furn_dedup:
         check['warnings'].append(f'重複家具{furn_dedup}件を除外')
+
+    import math as _fm
+    for it in placed:
+        ar = _fm.radians(it['angle'])
+        model_w = abs(it['bw'] * _fm.cos(ar)) + abs(it['bd'] * _fm.sin(ar))
+        model_d = abs(it['bw'] * _fm.sin(ar)) + abs(it['bd'] * _fm.cos(ar))
+        if it.get('w') and it.get('d') and max(abs(model_w - it['w']) / it['w'],
+                                               abs(model_d - it['d']) / it['d']) > .15:
+            it['review'] += '／図面外形と部品寸法に差あり'
 
     # 【8】家具ガイド枠（緑）: 図面のフットプリントを重ね描きして照合できるように
     furn_guides = []
@@ -4063,12 +4041,10 @@ def build_script(dxf_path, overrides=None):
         a('')
         a('_fb_count = [0]')
         a('')
-        a("# 家具の個別調整: 番号をキーに dx/dy(mm)・angle を上書きして再実行")
-        a("# 注意: angle上書き時は原点オフセット(ox,oy)が生成時角度のままのため初期位置が")
-        a("# ずれるが、配置後の自動補正（_fix_to_center）が中心を目標へ寄せ直す")
-        a("# 例) FURN_OVERRIDES = { 5: {'dx': 100, 'dy': -50, 'angle': 90} }")
-        a('FURN_OVERRIDES = {')
-        a('}')
+        a('# 家具番号ごとに部品・角度・移動量を指定（Web画面から編集可）')
+        a('# >>> FURN_OVERRIDES')
+        a('FURN_OVERRIDES = {}')
+        a('# <<< FURN_OVERRIDES')
         a('')
         a('def _hbb(h):')
         a('    """GetBBoxの返り値差（2点タプル/4値/3D点）を吸収して (x1,y1,x2,y2) を返す"""')
@@ -4109,9 +4085,23 @@ def build_script(dxf_path, overrides=None):
         a('')
         a('def place_furniture(no, name, cx, cy, angle, w, d, h, z0=0, ox=0, oy=0):')
         a('    ov = FURN_OVERRIDES.get(no, {})')
+        a('    if ov.get("skip", False):')
+        a('        return')
+        a('    import math')
+        a('    original_angle = angle')
+        a('    part = ov.get("part")')
+        a('    if part:')
+        a('        name, w, d, h, z0 = part["name"], part["w"], part["d"], part["h"], part["z0"]')
+        a('        ox, oy = part["cx"], part["cy"]')
+        a('        original_angle = 0  # 指定部品のオフセットは局所座標')
+        a('    elif ov.get("box", False):')
+        a('        name = None')
         a("    cx += ov.get('dx', 0)")
         a("    cy += ov.get('dy', 0)")
         a("    angle = ov.get('angle', angle)")
+        a('    delta = math.radians(angle - original_angle)')
+        a('    ox, oy = (ox * math.cos(delta) - oy * math.sin(delta),')
+        a('              ox * math.sin(delta) + oy * math.cos(delta))')
         a('    if name and ensure_symbol(name):')
         a('        # ox,oy = シンボル原点→フットプリント中心のオフセット（回転適用済み）')
         a('        vs.Symbol(name, (cx - ox + OX, cy - oy + OY), angle)')
@@ -4680,6 +4670,26 @@ def build_script(dxf_path, overrides=None):
     a(')')
     a('')
 
+    furniture_list = []
+    for no, it in enumerate(placed + boxed, 1):
+        is_symbol = no <= len(placed)
+        furniture_list.append({
+            'no': no, 'source': it.get('name') or '輪郭（部品名なし）',
+            'source_w': it.get('w'), 'source_d': it.get('d'),
+            'source_x': it['source_x'] + xo, 'source_y': it['source_y'] + yo,
+            'x': it['x'] + xo, 'y': it['y'] + yo,
+            'angle': it['angle'] if is_symbol else 0,
+            'source_angle': it['source_angle'],
+            'matched': it.get('matched') if is_symbol else None,
+            'symbol': it.get('vw') if is_symbol else None,
+            'review': it.get('review', '要確認'),
+        })
+    catalog_choices = [{'name': it.get('vw_name') or it['block'], 'label': it['name'],
+                        'category': it['category'], 'w': _match_dims(it)[0],
+                        'd': _match_dims(it)[1], 'h': it.get('h') or 700,
+                        'z0': it.get('z0') or 0, 'cx': it.get('cx') or 0,
+                        'cy': it.get('cy') or 0} for it in catalog]
+
     summary = {
         'origin': [xo, yo],
         'grid': [gx_max, gy_max],
@@ -4717,13 +4727,16 @@ def build_script(dxf_path, overrides=None):
         'east_fix': len(ewins),
         'west_ribbon': len(west),
         'beams': len(beams),
+        'furniture_list': furniture_list,
+        'furniture_catalog': catalog_choices,
+        'furniture_review': sum(it['review'] != '名前一致' for it in furniture_list),
         'furniture': len(placed),
         'furniture_mode': 'lineup' if FURN_LINEUP else 'plan',
         'furniture_total': len(placed) + len(boxed) + len(beds_simple) + len(sofas_simple),
         'furniture_boxed': len(boxed),
         'furniture_unmatched': len(unmatched),
-        'beds': len(beds_simple),
-        'sofas': len(sofas_simple),
+        'beds': sum(it['cat'] == 'ベッド' for it in placed),
+        'sofas': sum(it['cat'] == 'ソファ' for it in placed),
         'check': check,
         'bbox': [fx1, fy1, fx2, fy2],
     }
