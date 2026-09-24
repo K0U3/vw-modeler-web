@@ -44,9 +44,9 @@ class FurnitureMatchingTests(unittest.TestCase):
     def test_source_rotation_survives_size_matching(self):
         c=[{'name':'オーク材チェア','block':'chair','category':'チェア','w':440,'d':496}]
         for angle in [0,90,180,270,35]:
-            d=ezdxf.new(); b=d.blocks.new('anonymous')
+            d=ezdxf.new(); b=d.blocks.new('チェア')
             b.add_lwpolyline([(0,0),(440,0),(440,496),(0,496)],close=True)
-            d.modelspace().add_blockref('anonymous',(3000,5000),dxfattribs={'layer':'家具','rotation':angle})
+            d.modelspace().add_blockref('チェア',(3000,5000),dxfattribs={'layer':'家具','rotation':angle})
             f=engine.extract_furniture(d,0,0)[0]
             self.assertEqual((f['local_w'],f['local_d']),(440,496))
             hit,_,_,got=engine.furniture_match(f,c)
@@ -60,6 +60,13 @@ class FurnitureMatchingTests(unittest.TestCase):
             self.assertIsNone(hit)
             self.assertIn('要確認',review)
 
+    def test_anonymous_outline_never_becomes_appliance(self):
+        c=[{'name':'冷蔵庫小','block':'fridge','category':'家電','w':525,'d':638}]
+        for name in ('グループ-23', '', None):
+            hit,review,_,_=engine.furniture_match({'name':name,'w':525,'d':638},c)
+            self.assertIsNone(hit)
+            self.assertIn('種類不明',review)
+
     def test_runtime_replacement_rotation_and_skip(self):
         with tempfile.TemporaryDirectory() as tmp:
             p=Path(tmp)/'test.dxf'; make_plan(p)
@@ -68,7 +75,7 @@ class FurnitureMatchingTests(unittest.TestCase):
         env={'vs':SimpleNamespace(Symbol=Mock(),LNewObj=Mock(return_value='handle')),
              'FURN_OVERRIDES':{},'OX':1000,'OY':2000,'ensure_symbol':lambda n:True,
              'paint_white':lambda h:None,'_fix_to_center':lambda *a:None,
-             '_placed_syms':[],'fallback_box':Mock(),'_fb_count':[0],'num_label':Mock()}
+             '_placed_syms':[],'fallback_box':Mock(),'_furn_missing':[],'num_label':Mock()}
         exec(compile(ast.Module(body=[fn],type_ignores=[]),'runtime','exec'),env)
         env['FURN_OVERRIDES'][1]={'angle':180,'dx':50,'dy':-50}
         env['place_furniture'](1,'chair',3000,4000,0,440,496,760,0,100,20)
@@ -83,5 +90,12 @@ class FurnitureMatchingTests(unittest.TestCase):
         env['FURN_OVERRIDES'][1]={'skip':True};env['vs'].Symbol.reset_mock()
         env['place_furniture'](1,'chair',0,0,0,440,496,760)
         env['vs'].Symbol.assert_not_called()
+        env['FURN_OVERRIDES'] = {}
+        env['ensure_symbol'] = lambda n: False
+        env['place_furniture'](2,'missing',0,0,0,600,600,700)
+        env['place_furniture'](3,None,0,0,0,600,600,700)
+        env['fallback_box'].assert_not_called()
+        self.assertEqual(len(env['_furn_missing']),2)
+        self.assertNotIn('def fallback_box',script)
 
 if __name__=='__main__':unittest.main()

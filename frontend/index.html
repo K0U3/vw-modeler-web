@@ -104,6 +104,9 @@
         <option value="lineup">モデルの右横に整列</option>
       </select>
     </div>
+    <label class="hint" for="furniture_profile">確認済み家具対応表（任意・このDXF用のJSON）</label>
+    <input type="file" id="furniture_profile" accept=".json">
+    <div class="hint">対応表がある場合、指定されたMUJI部品・セット構成を平面図の位置に配置します。異なるDXFの対応表は使用できません。</div>
     <div class="hint">図面に描かれた家具を読み取り、室内に配置します。家具のない図面に新しくレイアウトを提案する機能ではありません。</div>
     <details>
       <summary>家具の詳細設定</summary>
@@ -111,7 +114,7 @@
       <div class="hint">「家具01」など、指定名で始まるレイヤーも読み取ります。</div>
       <label for="muji_lib" class="hint">家具ライブラリVWX（VWを実行するMac上のパス）</label>
       <input class="library-path" type="text" id="muji_lib" placeholder="空欄なら既定のMUJI家具ライブラリ">
-      <div class="hint">ライブラリを読み込めない家具は簡易ボックス、ベッド・ソファもライブラリ部品を優先します。候補が曖昧な家具は簡易ボックスとし、生成後の一覧で部品を選べます。</div>
+      <div class="hint">家具はMUJI家具 v2021の実部品だけを配置します。部品を特定できない家具は保留し、生成後の一覧で選択してください。ライブラリの取込失敗はVW実行時に未配置として報告します。</div>
     </details>
 
     <button id="go" disabled>スクリプトを生成</button>
@@ -193,6 +196,8 @@
       } catch (e) { upBlob = chosen; upName = chosen.name; }
     }
     fd.append('file', upBlob, upName);
+    const fp = document.getElementById('furniture_profile').files[0];
+    if (fp) fd.append('furniture_profile', fp);
     if (ch.value) fd.append('ch', ch.value);   // 他のパラメータはすべて自動判定（サーバー側既定値）
     fd.append('flooring_dir', document.getElementById('flooring_dir').value);
     fd.append('furniture_mode', document.getElementById('furniture_mode').value);
@@ -253,7 +258,7 @@
         ['フローリング', s.floor_dir === 'y' ? '縦張り(南北)' : '横張り(東西)'],
         ['梁', s.beams], ['家具の配置先', s.furniture_mode === 'lineup' ? '右横に整列' : '図面位置'],
         ['家具・設備 合計', s.furniture_total], ['ライブラリ照合', s.furniture], ['家具 要確認', s.furniture_review],
-        ['ベッド', s.beds], ['ソファ', s.sofas], ['簡易ボリューム家具', s.furniture_boxed], ['未配置家具', s.furniture_unmatched],
+        ['ベッド', s.beds], ['ソファ', s.sofas], ['保留家具', s.furniture_pending], ['未配置家具', s.furniture_unmatched],
         ['原点', 'x' + s.origin[0] + ' y' + s.origin[1]]
       ].map(([k, v]) => `<span class="chip">${k}: ${v}</span>`).join('');
       const furnitureNote = document.getElementById('furniture-note');
@@ -262,7 +267,7 @@
         ? (s.furniture_mode === 'lineup'
           ? '家具はモデルの右横に整列します。室内への自動配置は「図面の位置に配置」を選んで再生成してください。'
           : '家具は図面位置に配置します。緑のガイド枠と照合し、生成後の家具照合一覧で部品・向き・位置を確認してください。')
-          + ' ライブラリ照合数は取込候補の数です。取込不可の場合はVW実行時に簡易ボックスへ置き換わります。'
+          + ' ライブラリ照合数は取込候補の数です。取込不可の場合は配置せず、VW実行時に部品名とライブラリパスを報告します。'
         : '配置できる家具を検出できませんでした。DXFに家具が含まれているか、家具の詳細設定でレイヤー名を確認してください。';
       // セルフチェック警告と対処ヒント
       const hints = [
@@ -415,8 +420,7 @@
       dims.appendChild(pos);
       const target = cell(); const select = document.createElement('select');
       select.setAttribute('aria-label', '家具' + f.no + 'の部品');
-      select.add(new Option('生成時：' + (f.matched || '簡易ボックス'), 'original'));
-      select.add(new Option('簡易ボックス（現在の寸法）', 'box'));
+      select.add(new Option('生成時：' + (f.matched || '未配置（部品選択が必要）'), 'original'));
       select.add(new Option('配置しない', 'skip'));
       const groups = new Map();
       furnitureCatalog.forEach((part, i) => {
@@ -447,7 +451,6 @@
       }
       const ov = { angle: values[0], dx: values[1], dy: values[2] };
       if (select.value === 'skip') ov.skip = true;
-      else if (select.value === 'box') ov.box = true;
       else if (select.value !== 'original') {
         const part = furnitureCatalog[Number(select.value)];
         if (!part) throw new Error('家具' + f.no + '：部品を選び直してください。');

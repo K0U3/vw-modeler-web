@@ -53,13 +53,15 @@ def calls(script, name):
             and isinstance(n.value.func,ast.Name) and n.value.func.id == name]
 
 
-async def request(fields, data):
+async def request(fields, data, profile=None):
     boundary = 'furniture-test-boundary'
     body = b''
     for key, value in fields.items():
         body += (f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n{value}\r\n').encode()
     body += (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="plan.dxf"\r\n'
              'Content-Type: application/octet-stream\r\n\r\n').encode() + data
+    if profile is not None:
+        body += (f'\r\n--{boundary}\r\nContent-Disposition: form-data; name="furniture_profile"; filename="profile.json"\r\nContent-Type: application/json\r\n\r\n').encode() + json.dumps(profile).encode()
     body += f'\r\n--{boundary}--\r\n'.encode()
     messages = []
     async def receive():
@@ -92,7 +94,7 @@ class FurniturePlacementTests(unittest.TestCase):
     def test_default_places_all_types_in_drawing(self):
         script,s = self.generate()
         self.assertEqual(s['furniture_mode'],'plan')
-        self.assertEqual((s['furniture'],s['beds'],s['sofas'],s['furniture_boxed']),(3,1,1,1))
+        self.assertEqual((s['furniture'],s['beds'],s['sofas'],s['furniture_boxed']),(3,1,1,0))
         self.assertEqual(s['furniture_total'],4)
         ox,oy = s['origin']
         furniture = calls(script,'place_furniture')

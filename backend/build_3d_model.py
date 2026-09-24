@@ -289,7 +289,7 @@ CH_TEXT_SEARCH_R = 2500    # 梁ラインから CH≒ 注記を探す半径 mm
 # 点線（DASHED等）を梁として拾うレイヤー（設備のダクト点線等を誤検出しないよう限定）
 DASH_BEAM_LAYERS = {'天井', '躯体', '一般', '梁'}
 # MUJI家具ライブラリ（VW2021ネイティブ形式）。生成スクリプトが実行時にここから
-# シンボル定義を自動インポートする。インポート不可なら W×D×H の簡易ボックスで代替
+# シンボル定義を自動インポートする。インポート不可なら配置せず、家具番号と部品名を報告
 MUJI_LIB = '/Users/aikawawakou/Documents/MUJIHOUSE/MUJI家具 (1) v2021.vwx'
 
 # 形状判定の閾値
@@ -2603,6 +2603,8 @@ def furniture_match(f, catalog, prior=None):
         return None, '左右反転は要確認', 0, 0
     if hit:
         return hit, '名前一致' if score == 100 else '名前候補・向き要確認', 0, f.get('angle', 0)
+    if not furniture_family(name):
+        return None, '種類不明・MUJI部品の選択が必要', 0, 0
     # 寸法が名前に書かれているが一致しなかったものを寸法推測で別品番へ変えない。
     if furniture_family(name) and re.search(r'\d{2,}', _norm(name)):
         return None, '型式・寸法指定は要確認', 0, 0
@@ -2622,7 +2624,47 @@ def flat(pts):
 # ─────────────────────────────────────────────
 # メイン生成
 # ─────────────────────────────────────────────
-def build_script(dxf_path, overrides=None):
+def apply_furniture_profile(items, catalog, profile, dxf_path):
+    """Explicit, drawing-bound assignments; never guess by a group number alone."""
+    if profile is None:
+        return items
+    import hashlib, math
+    if not isinstance(profile, dict) or profile.get('version') != 1:
+        raise ValueError('家具対応表の形式が不正です')
+    if profile.get('dxf_sha256') != hashlib.sha256(Path(dxf_path).read_bytes()).hexdigest():
+        raise ValueError('家具対応表とDXFが一致しません。同じ図面用の対応表を選択してください')
+    assignments = profile.get('assignments')
+    if not isinstance(assignments, dict) or len(assignments) > 500:
+        raise ValueError('家具対応表の割当が不正です')
+    known = {it.get('vw_name') or it['block']: it for it in catalog}
+    result, used = [], set()
+    for f in items:
+        source = f.get('name')
+        if source not in assignments:
+            result.append(f)
+            continue
+        used.add(source)
+        parts = assignments[source]
+        if not isinstance(parts, list) or not 1 <= len(parts) <= 30:
+            raise ValueError('家具の構成部品数が不正です')
+        for part in parts:
+            if not isinstance(part, dict) or part.get('symbol') not in known:
+                raise ValueError('家具対応表にMUJIカタログ未登録の部品があります')
+            values = [part.get(k, 0) for k in ('dx', 'dy', 'angle')]
+            if any(type(v) not in (int, float) or not math.isfinite(v) for v in values):
+                raise ValueError('家具対応表の位置・角度が不正です')
+            dx, dy, angle = values
+            if max(abs(dx), abs(dy)) > 10000 or abs(angle) > 360:
+                raise ValueError('家具対応表の位置・角度が範囲外です')
+            result.append({**f, 'name':part['symbol'], 'x':f['x']+dx, 'y':f['y']+dy,
+                           'angle':angle, 'mirrored':False,
+                           'profile_source':source})
+    if set(assignments) != used:
+        raise ValueError('家具対応表の対象が図面から検出できませんでした')
+    return result
+
+
+def build_script(dxf_path, overrides=None, furniture_profile=None):
     """DXF から VW Python スクリプト文字列を生成し (script, summary) を返す。
     overrides で CH/SILL/HEAD/WALL_LAYERS 等を上書きできる（Web UI 用）。"""
     globals()['CH'] = None   # Web常駐プロセスで前リクエストの検出値を持ち越さない
@@ -3075,6 +3117,7 @@ def build_script(dxf_path, overrides=None):
     catalog = load_catalog()
     furniture = extract_furniture(doc, xo, yo)
     furniture += extract_furniture_extra(doc, xo, yo, envelopes)
+    furniture = apply_furniture_profile(furniture, catalog, furniture_profile, dxf_path)
     room_pts = detect_room_priors(doc, xo, yo)
 
     def _prior_cats(f):
@@ -3106,7 +3149,7 @@ def build_script(dxf_path, overrides=None):
             hit, via = None, '部屋用途と設備候補が不一致・要確認'
         f['review'] = via
         # ベッド・ソファも他の家具と同様にライブラリの実部品を使う。
-        # 未確定の場合は元図面外形のボックスを表示し、画面で部品を指定できる。
+        # 未確定の場合は配置を保留し、画面で実部品を指定できる。
         if hit:
             placed.append({**f, 'angle': ang,
                            'block': hit['block'], 'matched': hit['name'],
@@ -3114,13 +3157,13 @@ def build_script(dxf_path, overrides=None):
                            'vw': hit.get('vw_name') or hit['block'],
                            'h': hit.get('h') or 700,
                            'z0': hit.get('z0') or 0,
-                           # ボックス代替の実寸はACIS実測(w_geo/d_geo)を優先
+                           # 部品の実寸はACIS実測(w_geo/d_geo)を優先
                            'bw': hit.get('w_geo') or hit.get('w') or f.get('w') or 600,
                            'bd': hit.get('d_geo') or hit.get('d') or f.get('d') or 600,
                            'cx0': hit.get('cx') or 0,
                            'cy0': hit.get('cy') or 0})
         elif f.get('w') and f.get('d'):
-            boxed.append(f)      # 該当なし → 図面実寸の簡易ボリューム（無理にインポートしない）
+            boxed.append(f)      # 該当なし → 保留。画面で部品選択後に配置
         else:
             unmatched.append(f)  # 寸法も取れない → コメントで報告のみ
 
@@ -3503,7 +3546,7 @@ def build_script(dxf_path, overrides=None):
     _all_f.sort(key=lambda t: -((t[2][2] - t[2][0]) * (t[2][3] - t[2][1])))
     _kept_r, _drop = [], set()
     for kind, it, r in _all_f:
-        if any(_ix_ratio(r, k) > 0.6 and _ix_ratio(k, r) > 0.6 for k in _kept_r):
+        if not it.get('profile_source') and any(_ix_ratio(r, k) > 0.6 and _ix_ratio(k, r) > 0.6 for k in _kept_r):
             _drop.add(id(it))
             furn_dedup += 1
         else:
@@ -4006,7 +4049,7 @@ def build_script(dxf_path, overrides=None):
         a('')
         a('_sym_cache = {}')
         a('def ensure_symbol(name):')
-        a('    """シンボル定義を現在書類に確保。成功=True / 失敗=False（→ボックス代替）"""')
+        a('    """シンボル定義を現在書類に確保。成功=True / 失敗=False（配置せず理由を報告）"""')
         a('    if not name:')
         a('        return False')
         a('    if name in _sym_cache:')
@@ -4028,18 +4071,7 @@ def build_script(dxf_path, overrides=None):
         a('    _sym_cache[name] = ok')
         a('    return ok')
         a('')
-        a('def fallback_box(cx, cy, angle, w, d, h, z0=0):')
-        a('    """カタログ寸法 W×D×H の簡易3Dボックス（シンボル取込不可時の代替）"""')
-        a('    vs.BeginXtrd(z0, z0 + h)')
-        a('    vs.Rect((cx - w / 2.0 + OX, cy + d / 2.0 + OY), '
-          '(cx + w / 2.0 + OX, cy - d / 2.0 + OY))')
-        a('    vs.EndXtrd()')
-        a('    box = vs.LNewObj()')
-        a('    if angle:')
-        a('        vs.HRotate(box, (cx + OX, cy + OY), angle)')
-        a('    paint_white(box)   # 家具は全て白塗り')
-        a('')
-        a('_fb_count = [0]')
+        a('_furn_missing = []')
         a('')
         a('# 家具番号ごとに部品・角度・移動量を指定（Web画面から編集可）')
         a('# >>> FURN_OVERRIDES')
@@ -4110,8 +4142,9 @@ def build_script(dxf_path, overrides=None):
         a('        _fix_to_center(_h, cx, cy, max(w, d))')
         a('        _placed_syms.append((_h, cx, cy, max(w, d)))')
         a('    else:')
-        a('        fallback_box(cx, cy, angle, w, d, h, z0)')
-        a('        _fb_count[0] += 1')
+        a('        reason = "MUJI部品未選択" if not name else "シンボル取込失敗: " + name')
+        a('        _furn_missing.append("家具%d: %s" % (no, reason))')
+        a('        return')
         a("    num_label('家具%d' % no, cx, cy)")
         a('')
     a("vs.Layer('3Dモデル')")
@@ -4426,7 +4459,7 @@ def build_script(dxf_path, overrides=None):
     if placed:
         where = 'モデル右横に整列（緑ガイド枠=図面上の本来位置）' if FURN_LINEUP else '図面位置に配置'
         a(f'# 家具 {len(placed)} 件 — {where}'
-          f'（MUJIライブラリからシンボル自動インポート。取込不可は W×D×H ボックス代替）')
+          f'（MUJIライブラリからシンボル自動インポート。取込不可は未配置として報告）')
         import math as _math
         for fi, f in enumerate(placed, 1):
             _a = _math.radians(f['angle'])
@@ -4502,7 +4535,7 @@ def build_script(dxf_path, overrides=None):
         a('')
 
     if boxed:
-        a(f'# 該当なし家具 {len(boxed)} 件（無理にシンボルは当てず図面実寸の簡易ボリューム 高さFURN_BOX_H）')
+        a(f'# 該当なし家具 {len(boxed)} 件（無理にシンボルは当てず図面実寸の保留・部品を選択するまで配置しない）')
         for bi2, f in enumerate(boxed, len(placed) + 1):
             tag = f"INSERT '{f['name']}'" if f['kind'] == 'insert' \
                 else 'フットプリント'
@@ -4657,13 +4690,16 @@ def build_script(dxf_path, overrides=None):
       f" / 断熱 {len(insul) + len(insul_segs)}\\n'")
     a(f"    '窓 {len(win_registry)} / 天井梁 {len(ceil_beams)} / 天井 {len(ceilings)}室 / バルコニー {len(balconies)}\\n'")
     a(f"    '南窓 {len(swins)} / 北窓 {len(nwins)} / 東FIX {len(ewins)}\\n'")
-    a(f"    '梁 {len(beams)} / 家具 配置{len(placed)} ベッド{len(beds_simple)} ソファ{len(sofas_simple)} 簡易{len(boxed)} 未マッチ{len(unmatched)}\\n'")
+    a(f"    '梁 {len(beams)} / 家具候補{len(placed)} 保留{len(boxed)} 未マッチ{len(unmatched)}\\n'")
     a(f"    '天井高 {CH}mm" + (' (図面検出)' if ch_detected else ' (ユーザー指定)') + "\\n'")
     a(f"    '部屋: {rooms_line}'")
     a("    + '\\n' + _align_note")
     a("    + '\\n' + _ring_note")
+    if placed or boxed:
+        a("    + '\\n家具未配置 ' + str(len(_furn_missing)) + ' 件（簡易ボリュームは生成しません）'")
+        a("    + ('\\n' + '\\n'.join(_furn_missing[:20]) if _furn_missing else '')")
+        a("    + ('\\nライブラリ: ' + MUJI_LIB if _furn_missing else '')")
     if placed:
-        a("    + '\\n家具ボックス代替 ' + str(_fb_count[0]) + ' 件（シンボル取込不可分）'")
         a("    + '\\n家具位置補正 ' + str(_furn_stats['fix']) + '件(最大' + str(_furn_stats['max'])")
         a("    + 'mm) / 計測不能 ' + str(_furn_stats['unreliable']) + ' / 残差50mm超 '")
         a("    + str(_furn_stats['residual'])")
@@ -4674,7 +4710,7 @@ def build_script(dxf_path, overrides=None):
     for no, it in enumerate(placed + boxed, 1):
         is_symbol = no <= len(placed)
         furniture_list.append({
-            'no': no, 'source': it.get('name') or '輪郭（部品名なし）',
+            'no': no, 'source': it.get('profile_source') or it.get('name') or '輪郭（部品名なし）',
             'source_w': it.get('w'), 'source_d': it.get('d'),
             'source_x': it['source_x'] + xo, 'source_y': it['source_y'] + yo,
             'x': it['x'] + xo, 'y': it['y'] + yo,
@@ -4733,8 +4769,9 @@ def build_script(dxf_path, overrides=None):
         'furniture': len(placed),
         'furniture_mode': 'lineup' if FURN_LINEUP else 'plan',
         'furniture_total': len(placed) + len(boxed) + len(beds_simple) + len(sofas_simple),
-        'furniture_boxed': len(boxed),
-        'furniture_unmatched': len(unmatched),
+        'furniture_boxed': 0,
+        'furniture_pending': len(boxed),
+        'furniture_unmatched': len(unmatched) + len(boxed),
         'beds': sum(it['cat'] == 'ベッド' for it in placed),
         'sofas': sum(it['cat'] == 'ソファ' for it in placed),
         'check': check,

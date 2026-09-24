@@ -54,6 +54,7 @@ def index():
 @app.post("/generate")
 async def generate(
     file: UploadFile = File(...),
+    furniture_profile: Optional[UploadFile] = File(None),
     ch: Optional[int] = Form(None),   # 未指定なら図面の天井高注記(天井高/CH表記)から自動検出
     flooring_dir: str = Form("x"),    # フローリングの向き: 'x'=東西 / 'y'=南北
     sill: int = Form(900),
@@ -131,7 +132,14 @@ async def generate(
         }
         if ch is not None:
             overrides["CH"] = ch
-        script, summary = engine.build_script(tmp.name, overrides)
+        profile = None
+        if furniture_profile is not None:
+            import json
+            profile_data = await furniture_profile.read(250001)
+            if len(profile_data) > 250000:
+                raise ValueError('家具対応表が大きすぎます')
+            profile = json.loads(profile_data.decode('utf-8'))
+        script, summary = engine.build_script(tmp.name, overrides, furniture_profile=profile)
         out_name = (Path(fname or "model").stem) + "_model_vw.py"
         return JSONResponse({
             "ok": True,
