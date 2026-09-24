@@ -2392,6 +2392,8 @@ def extract_furniture(doc, xo, yo):
     import math
     items = []
     ext_cache = {}
+    shape_cache = {}
+    from furniture_shapes import describe_insert
     # セットコンテナ判定: 家具/設備INSERTを2個以上直接内包するブロックは
     # 「複数家具のグループ」なので自身は配置せず、中身を個別に照合する
     containers = set()
@@ -2434,7 +2436,11 @@ def extract_furniture(doc, xo, yo):
             ld = round(lbb[3] - lbb[1]) if lbb else d
             mirrored = (getattr(e.dxf, 'xscale', 1) * getattr(e.dxf, 'yscale', 1) < 0
                         or getattr(e.dxf, 'extrusion', (0, 0, 1))[2] < 0)
+            shape_key = (e.dxf.name, e.dxf.xscale, e.dxf.yscale, tuple(e.dxf.extrusion))
+            if shape_key not in shape_cache:
+                shape_cache[shape_key] = describe_insert(e)
             items.append({
+                'shape': shape_cache[shape_key],
                 'local_w': lw, 'local_d': ld, 'mirrored': mirrored,
                 'kind': 'insert',
                 'name': e.dxf.name,
@@ -2626,9 +2632,13 @@ def flat(pts):
 # ─────────────────────────────────────────────
 def apply_furniture_profile(items, catalog, profile, dxf_path):
     """Explicit, drawing-bound assignments; never guess by a group number alone."""
+    import hashlib, math, json
     if profile is None:
-        return items
-    import hashlib, math
+        digest = hashlib.sha256(Path(dxf_path).read_bytes()).hexdigest()
+        bundled = Path(__file__).parent / "furniture_profiles" / (digest + ".json")
+        if not bundled.is_file():
+            return items
+        profile = json.loads(bundled.read_text(encoding="utf-8"))
     if not isinstance(profile, dict) or profile.get('version') != 1:
         raise ValueError('家具対応表の形式が不正です')
     if profile.get('dxf_sha256') != hashlib.sha256(Path(dxf_path).read_bytes()).hexdigest():
@@ -3120,6 +3130,8 @@ def build_script(dxf_path, overrides=None, furniture_profile=None):
     furniture = extract_furniture(doc, xo, yo)
     furniture += extract_furniture_extra(doc, xo, yo, envelopes)
     furniture = apply_furniture_profile(furniture, catalog, furniture_profile, dxf_path)
+    from furniture_shapes import expand_shape_matches
+    furniture = expand_shape_matches(furniture, catalog)
     room_pts = detect_room_priors(doc, xo, yo)
 
     def _prior_cats(f):
@@ -3149,6 +3161,8 @@ def build_script(dxf_path, overrides=None, furniture_profile=None):
         if hit and via.startswith('寸法') and prior and hit['category'] not in prior \
                 and _single_kind(hit['category'], hit['name']):
             hit, via = None, '部屋用途と設備候補が不一致・要確認'
+        if f.get('shape_matched'):
+            via = '確認済み平面形状一致'
         if f.get('mirror_y'):
             via += '／確認済みY反転'
         f['review'] = via

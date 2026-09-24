@@ -104,9 +104,9 @@
         <option value="lineup">モデルの右横に整列</option>
       </select>
     </div>
-    <label class="hint" for="furniture_profile">確認済み家具対応表（任意・このDXF用のJSON）</label>
+    <label class="hint" for="furniture_profile">家具対応表の追加・上書き（通常は選択不要）</label>
     <input type="file" id="furniture_profile" accept=".json">
-    <div class="hint">対応表がある場合、指定されたMUJI部品・セット構成を平面図の位置に配置します。異なるDXFの対応表は使用できません。</div>
+    <div class="hint">家具名と確認済みの平面形状からMUJI家具を照合します。登録済みの図面には対応付けを自動適用するので追加ファイルは不要です。未特定の家具は生成後に部品を選択できます。JSONは独自設定を上書きする場合のみ使用します。</div>
     <div class="hint">図面に描かれた家具を読み取り、室内に配置します。家具のない図面に新しくレイアウトを提案する機能ではありません。</div>
     <details>
       <summary>家具の詳細設定</summary>

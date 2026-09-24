@@ -4,6 +4,7 @@ import copy
 import hashlib
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 import ezdxf
@@ -42,6 +43,24 @@ class FurnitureProfileTests(unittest.TestCase):
         # Request-local profile does not persist into the next drawing request.
         _, plain = engine.build_script(self.path,{'CH':2400})
         self.assertEqual(plain['furniture'],0)
+
+    def test_builtin_profile_applies_without_upload_and_explicit_takes_precedence(self):
+        original_is_file = Path.is_file
+        original_read = Path.read_text
+        def is_file(path):
+            return True if path.parent.name == 'furniture_profiles' else original_is_file(path)
+        def read(path, *args, **kwargs):
+            if path.parent.name == 'furniture_profiles':
+                import json
+                return json.dumps(self.profile)
+            return original_read(path, *args, **kwargs)
+        with patch.object(Path, 'is_file', is_file), patch.object(Path, 'read_text', read):
+            _, summary = engine.build_script(self.path, {'CH':2400})
+            self.assertEqual(summary['furniture'], 4)
+            explicit = copy.deepcopy(self.profile)
+            explicit['assignments']['anonymous-storage'] = explicit['assignments']['anonymous-storage'][:1]
+            _, summary = engine.build_script(self.path, {'CH':2400}, explicit)
+            self.assertEqual(summary['furniture'], 1)
 
     def test_wrong_drawing_unknown_symbol_and_missing_source_rejected(self):
         for mutate in [lambda p:p.update(dxf_sha256='0'*64),
