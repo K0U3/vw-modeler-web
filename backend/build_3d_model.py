@@ -2653,12 +2653,14 @@ def apply_furniture_profile(items, catalog, profile, dxf_path):
             values = [part.get(k, 0) for k in ('dx', 'dy', 'angle')]
             if any(type(v) not in (int, float) or not math.isfinite(v) for v in values):
                 raise ValueError('家具対応表の位置・角度が不正です')
+            if type(part.get('mirror_y', False)) is not bool:
+                raise ValueError('家具対応表の反転指定が不正です')
             dx, dy, angle = values
             if max(abs(dx), abs(dy)) > 10000 or abs(angle) > 360:
                 raise ValueError('家具対応表の位置・角度が範囲外です')
             result.append({**f, 'name':part['symbol'], 'x':f['x']+dx, 'y':f['y']+dy,
                            'angle':angle, 'mirrored':False,
-                           'profile_source':source})
+                           'profile_source':source, 'mirror_y':part.get('mirror_y', False)})
     if set(assignments) != used:
         raise ValueError('家具対応表の対象が図面から検出できませんでした')
     return result
@@ -3147,6 +3149,8 @@ def build_script(dxf_path, overrides=None, furniture_profile=None):
         if hit and via.startswith('寸法') and prior and hit['category'] not in prior \
                 and _single_kind(hit['category'], hit['name']):
             hit, via = None, '部屋用途と設備候補が不一致・要確認'
+        if f.get('mirror_y'):
+            via += '／確認済みY反転'
         f['review'] = via
         # ベッド・ソファも他の家具と同様にライブラリの実部品を使う。
         # 未確定の場合は配置を保留し、画面で実部品を指定できる。
@@ -3724,6 +3728,7 @@ def build_script(dxf_path, overrides=None, furniture_profile=None):
     a('    paint_white(obj)')
     a('')
     a('_RING_HS = []   # 外周壁ラインのハンドル（実測セルフチェック用）')
+    a('_RING_EXPECTED = []')
     a('')
     a('def wall_sheet(x1, y1, x2, y2, h, z=0):')
     a('    \"\"\"壁のラインをそのまま垂直面として立ち上げる（厚みなし）\"\"\"')
@@ -3736,6 +3741,7 @@ def build_script(dxf_path, overrides=None, furniture_profile=None):
     a('    _h = vs.LNewObj()')
     a('    paint_white(_h)')
     a('    _RING_HS.append(_h)')
+    a('    _RING_EXPECTED.append((x1 + OX, y1 + OY, x2 + OX, y2 + OY))')
     a('')
     a('def glass_rect(x1, y1, x2, y2, h, z=0):')
     a('    """ガラス: 白ベタの上に半透明をかけて区別する"""')
@@ -4115,7 +4121,7 @@ def build_script(dxf_path, overrides=None, furniture_profile=None):
         a('        _furn_stats["max"] = max(_furn_stats["max"], round(dist))')
         a('    return dist')
         a('')
-        a('def place_furniture(no, name, cx, cy, angle, w, d, h, z0=0, ox=0, oy=0):')
+        a('def place_furniture(no, name, cx, cy, angle, w, d, h, z0=0, ox=0, oy=0, mirror_y=False):')
         a('    ov = FURN_OVERRIDES.get(no, {})')
         a('    if ov.get("skip", False):')
         a('        return')
@@ -4136,8 +4142,16 @@ def build_script(dxf_path, overrides=None, furniture_profile=None):
         a('              ox * math.sin(delta) + oy * math.cos(delta))')
         a('    if name and ensure_symbol(name):')
         a('        # ox,oy = シンボル原点→フットプリント中心のオフセット（回転適用済み）')
-        a('        vs.Symbol(name, (cx - ox + OX, cy - oy + OY), angle)')
+        a('        vs.Symbol(name, (0, 0) if mirror_y else (cx - ox + OX, cy - oy + OY), 0 if mirror_y else angle)')
         a('        _h = vs.LNewObj()')
+        a('        if mirror_y:')
+        a('            # VW2021 Mirror does not preserve a transformed symbol matrix.')
+        a('            # Reflect at local origin first, then rotate and center explicitly.')
+        a('            theta = math.radians(-angle)')
+        a('            _h = vs.Mirror(_h, False, (0, 0), (100 * math.cos(theta), 100 * math.sin(theta)))')
+        a('            vs.HRotate(_h, (0, 0), angle)')
+        a('            bx1, by1, bx2, by2 = _hbb(_h)')
+        a('            vs.Move3DObj(_h, cx + OX - (bx1 + bx2)/2, cy + OY - (by1 + by2)/2, 0)')
         a('        paint_white(_h)   # 家具は全て白塗り')
         a('        _fix_to_center(_h, cx, cy, max(w, d))')
         a('        _placed_syms.append((_h, cx, cy, max(w, d)))')
@@ -4154,6 +4168,17 @@ def build_script(dxf_path, overrides=None, furniture_profile=None):
     a('    _nx = vs.NextObj(_prev)')
     a('    vs.DelObject(_prev)')
     a('    _prev = _nx')
+    a('')
+    a('# 作業中は計測可能ビューへ（3DビューだとGetBBoxがスクリーン投影bboxになり補正が狂う）')
+    a('try:')
+    a("    vs.DoMenuTextByName('Standard Views', 1)   # 1=Top/Plan（内部名・日本語版可）")
+    a('except Exception:')
+    a('    pass')
+    a('try:')
+    a('    if vs.GetProjection(vs.ActLayer()) != 6:   # 6=Plan投影でなければ')
+    a('        vs.SetView(0, 0, 0, 0, 0, 0)           # 3D Top（VW公式Marionetteと同じ前処理）')
+    a('except Exception:')
+    a('    pass')
     a('')
     a("_align_note = '位置合わせ: 補正なし'")
     if has_exp_bbox:
@@ -4225,17 +4250,6 @@ def build_script(dxf_path, overrides=None, furniture_profile=None):
         a('except Exception:')
         a('    pass')
         a('')
-    a('# 作業中は計測可能ビューへ（3DビューだとGetBBoxがスクリーン投影bboxになり補正が狂う）')
-    a('try:')
-    a("    vs.DoMenuTextByName('Standard Views', 1)   # 1=Top/Plan（内部名・日本語版可）")
-    a('except Exception:')
-    a('    pass')
-    a('try:')
-    a('    if vs.GetProjection(vs.ActLayer()) != 6:   # 6=Plan投影でなければ')
-    a('        vs.SetView(0, 0, 0, 0, 0, 0)           # 3D Top（VW公式Marionetteと同じ前処理）')
-    a('except Exception:')
-    a('    pass')
-    a('')
     a('# 床スラブ + フローリング（板張り）')
     a(f'rect({fx1}, {fy1}, {fx2}, {fy2}, FH, -FH)')
     a('')
@@ -4466,7 +4480,7 @@ def build_script(dxf_path, overrides=None, furniture_profile=None):
             _ox = round(f['cx0'] * _math.cos(_a) - f['cy0'] * _math.sin(_a))
             _oy = round(f['cx0'] * _math.sin(_a) + f['cy0'] * _math.cos(_a))
             a(f"place_furniture({fi}, {f['vw']!r}, {f['x']}, {f['y']}, {f['angle']}, "
-              f"{f['bw']}, {f['bd']}, {f['h']}, {f['z0']}, {_ox}, {_oy})"
+              f"{f['bw']}, {f['bd']}, {f['h']}, {f['z0']}, {_ox}, {_oy}, mirror_y={f.get('mirror_y', False)!r})"
               f"   # 家具{fi} [{f['cat']}] {f['matched']}  ←{f['via']}照合")
         a('')
 
@@ -4645,6 +4659,32 @@ def build_script(dxf_path, overrides=None, furniture_profile=None):
             a(f'#   窓{n}: {kind}  ({wx1},{wy1})-({wx2},{wy2})  {note}')
         a('')
 
+    # ── VW内 実測セルフチェック: モデル外周が「どこに描かれたか」を測って期待位置と比較 ──
+    a('# ── 実測セルフチェック: モデル外周の実際の位置を測る ──')
+    a("_ring_note = '外周実測: 対象なし'")
+    a('if _RING_HS:')
+    a('    _rx = []')
+    a('    _ry = []')
+    a('    _rex, _rey = [], []')
+    a('    for _rh, _expected in zip(_RING_HS, _RING_EXPECTED):')
+    a('        try:')
+    a('            _b1, _b2, _b3, _b4 = _hbb(_rh)')
+    a('            _rx += [_b1, _b3]')
+    a('            _ry += [_b2, _b4]')
+    a('            _rex += [_expected[0], _expected[2]]')
+    a('            _rey += [_expected[1], _expected[3]]')
+    a('        except Exception:')
+    a('            pass')
+    a('    if _rx:')
+    a('        _exp_ring = (min(_rex), min(_rey), max(_rex), max(_rey))')
+    a('        _rdx = ((min(_rx) + max(_rx)) - (_exp_ring[0] + _exp_ring[2])) / 2.0')
+    a('        _rdy = ((min(_ry) + max(_ry)) - (_exp_ring[1] + _exp_ring[3])) / 2.0')
+    a('        if abs(_rdx) > 10 or abs(_rdy) > 10:')
+    a("            _ring_note = '⚠外周実測: 期待位置から dx=%d dy=%d 差があります（座標・表示を確認）' % (round(_rdx), round(_rdy))")
+    a('        else:')
+    a("            _ring_note = '外周実測: 期待位置に一致（ズレなし）'")
+    a('')
+
     a('# 仕上げ: アイソメビューへ（配置・補正・テキストはすべてTop系ビューで完了済み）')
     a('try:')
     a("    vs.DoMenuTextByName('Standard Views', 8)   # 8=Right Isometric")
@@ -4653,29 +4693,6 @@ def build_script(dxf_path, overrides=None, furniture_profile=None):
     a('        vs.SetView(-45, -35.264, -30, 0, 0, 0)')
     a('    except Exception:')
     a('        pass')
-    a('')
-
-    # ── VW内 実測セルフチェック: モデル外周が「どこに描かれたか」を測って期待位置と比較 ──
-    a('# ── 実測セルフチェック: モデル外周の実際の位置を測る ──')
-    a("_ring_note = '外周実測: 対象なし'")
-    a('if _RING_HS:')
-    a('    _rx = []')
-    a('    _ry = []')
-    a('    for _rh in _RING_HS:')
-    a('        try:')
-    a('            _b1, _b2, _b3, _b4 = _hbb(_rh)')
-    a('            _rx += [_b1, _b3]')
-    a('            _ry += [_b2, _b4]')
-    a('        except Exception:')
-    a('            pass')
-    a('    if _rx:')
-    a(f'        _exp_ring = ({fx1} + OX, {fy1} + OY, {fx2} + OX, {fy2} + OY)')
-    a('        _rdx = ((min(_rx) + max(_rx)) - (_exp_ring[0] + _exp_ring[2])) / 2.0')
-    a('        _rdy = ((min(_ry) + max(_ry)) - (_exp_ring[1] + _exp_ring[3])) / 2.0')
-    a('        if abs(_rdx) > 10 or abs(_rdy) > 10:')
-    a("            _ring_note = '⚠外周実測: 期待位置から dx=%d dy=%d ずれて描画（VW側要因）' % (round(_rdx), round(_rdy))")
-    a('        else:')
-    a("            _ring_note = '外周実測: 期待位置に一致（ズレなし）'")
     a('')
 
     n_pseg = sum(len(w['segments']) for w in part_walls)
